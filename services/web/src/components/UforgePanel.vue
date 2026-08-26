@@ -4,17 +4,22 @@ import {
   compileOnDevice,
   currentApp,
   generate,
+  getSessionPassword,
   login,
   loadHappEnvelope,
   register,
+  resetCurrentApp,
   setSessionPassword,
   setToken,
   unlockBuilder,
   unlockLocalHapp,
+  wipeInstalledApp,
+  discardUncompiledWork,
+  isBuilderUnlocked,
   type LocalHapp,
   type UforgeApp,
 } from '../api';
-import type { AppSpec } from './GeneratedApp.vue';
+import type { AppSpec } from '../runtime/types';
 
 const props = defineProps<{
   app: UforgeApp | null;
@@ -28,6 +33,7 @@ const emit = defineEmits<{
   refresh: [];
   compiled: [happ: LocalHapp];
   unlocked: [happ: LocalHapp];
+  wiped: [];
 }>();
 
 const mode = ref<'login' | 'register'>('login');
@@ -36,6 +42,10 @@ const password = ref('');
 const prompt = ref('');
 const busy = ref(false);
 const compiling = ref(false);
+const wiping = ref(false);
+const confirmWipe = ref(false);
+const compilePassword = ref('');
+const needCompilePassword = ref(false);
 const error = ref('');
 const loggedIn = ref(props.kind === 'workshop');
 const thread = ref<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
@@ -82,6 +92,10 @@ async function submitAuth(): Promise<void> {
     const { token } = await fn(accountEmail, password.value);
     setToken(token);
     setSessionPassword(password.value);
+    const resumeBuilder = isBuilderUnlocked();
+    if (!loadHappEnvelope() && !resumeBuilder) {
+      await discardUncompiledWork();
+    }
     unlockBuilder();
     emit('refresh');
     if (props.kind === 'lock' && props.blocking) {
@@ -99,6 +113,7 @@ async function send(text = prompt.value): Promise<void> {
   if (!value || busy.value) {
     return;
   }
+  confirmWipe.value = false;
   prompt.value = '';
   thread.value.push({ role: 'user', text: value });
   busy.value = true;
@@ -117,14 +132,46 @@ async function send(text = prompt.value): Promise<void> {
   }
 }
 
+async function wipeApp(): Promise<void> {
+  if (!confirmWipe.value) {
+    confirmWipe.value = true;
+    return;
+  }
+  wiping.value = true;
+  error.value = '';
+  try {
+    await resetCurrentApp();
+    wipeInstalledApp();
+    thread.value = [];
+    confirmWipe.value = false;
+    emit('wiped');
+    emit('refresh');
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Pas possible';
+  } finally {
+    wiping.value = false;
+  }
+}
+
 async function useApp(): Promise<void> {
   compiling.value = true;
   error.value = '';
   try {
+    if (!getSessionPassword()) {
+      const typed = compilePassword.value.trim();
+      if (!typed) {
+        needCompilePassword.value = true;
+        error.value = 'Entre ton mot de passe pour chiffrer l’appli.';
+        return;
+      }
+      setSessionPassword(typed);
+    }
     const source = props.app?.id && props.app.id !== 'local'
       ? props.app
       : await currentApp();
     const happ = await compileOnDevice(source);
+    compilePassword.value = '';
+    needCompilePassword.value = false;
     emit('compiled', happ);
     emit('close');
   } catch (err) {
@@ -274,6 +321,15 @@ onMounted(() => {
             placeholder="Ajoute une photo, change le nom…"
             @keydown.enter.exact.prevent="send()"
           />
+          <input
+            v-if="needCompilePassword"
+            v-model="compilePassword"
+            type="password"
+            placeholder="Mot de passe du compte"
+            minlength="8"
+            autocomplete="current-password"
+            @keydown.enter.exact.prevent="useApp"
+          />
           <div class="row">
             <button class="ghost" type="submit" :disabled="busy">Envoyer</button>
             <button
@@ -285,6 +341,24 @@ onMounted(() => {
               {{ compiling ? '…' : 'Utiliser mon appli' }}
             </button>
           </div>
+          <p v-if="confirmWipe" class="warn">
+            L’appli et ses données disparaissent de cet appareil. Ton compte
+            reste. Deuxième clic pour confirmer.
+          </p>
+          <button
+            class="danger"
+            type="button"
+            :disabled="busy || compiling || wiping"
+            @click="wipeApp"
+          >
+            {{
+              wiping
+                ? '…'
+                : confirmWipe
+                  ? 'Oui, tout effacer'
+                  : 'Tout remettre à zéro'
+            }}
+          </button>
         </form>
       </template>
     </div>
@@ -392,6 +466,7 @@ h2 {
   padding: 0 1.1rem 1.1rem;
 }
 .auth input,
+.composer input,
 textarea {
   background: var(--bg);
   border: 1px solid var(--line);
@@ -465,6 +540,21 @@ textarea {
 .primary:disabled,
 .ghost:disabled {
   opacity: 0.45;
+}
+.danger {
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font-size: 0.88rem;
+  padding: 0.35rem 0;
+  cursor: pointer;
+  align-self: flex-start;
+}
+.warn {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.4;
 }
 .error {
   color: var(--danger);

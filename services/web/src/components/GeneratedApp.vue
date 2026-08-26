@@ -1,95 +1,211 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-
-export type AppSpec = {
-  app?: { name?: string };
-  pages?: Array<{ name: string; type: string }>;
-  capabilities?: string[];
-  conversation?: Array<{ role: 'user' | 'assistant'; text: string }>;
-};
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { buildGuestDocument } from '../runtime/buildGuestDocument';
+import { handleRuntimeCall } from '../runtime/hostBridge';
+import type { AppSpec, RuntimeRequest } from '../runtime/types';
 
 const props = defineProps<{
   spec: AppSpec | null;
   appName: string;
+  appId?: string;
 }>();
 
-const pages = computed(() => {
-  if (props.spec?.pages?.length) {
-    return props.spec.pages;
+const frame = ref<HTMLIFrameElement | null>(null);
+const cameraInput = ref<HTMLInputElement | null>(null);
+const fileInput = ref<HTMLInputElement | null>(null);
+
+let imageWaiter: ((value: string | null) => void) | null = null;
+let fileWaiter: ((value: { name: string; dataUrl: string } | null) => void) | null = null;
+
+const appId = computed(() => props.appId || 'preview');
+
+const srcdoc = computed(() => buildGuestDocument(props.spec));
+const frameKey = computed(() => JSON.stringify(props.spec ?? null));
+
+function pickImage(): Promise<string | null> {
+  return new Promise((resolve) => {
+    imageWaiter = resolve;
+    cameraInput.value?.click();
+    window.addEventListener(
+      'focus',
+      () => {
+        window.setTimeout(() => {
+          if (imageWaiter === resolve) {
+            imageWaiter = null;
+            resolve(null);
+          }
+        }, 600);
+      },
+      { once: true },
+    );
+  });
+}
+
+function pickFile(): Promise<{ name: string; dataUrl: string } | null> {
+  return new Promise((resolve) => {
+    fileWaiter = resolve;
+    fileInput.value?.click();
+    window.addEventListener(
+      'focus',
+      () => {
+        window.setTimeout(() => {
+          if (fileWaiter === resolve) {
+            fileWaiter = null;
+            resolve(null);
+          }
+        }, 600);
+      },
+      { once: true },
+    );
+  });
+}
+
+async function share(text: string): Promise<void> {
+  try {
+    if (navigator.share) {
+      await navigator.share({ text });
+      return;
+    }
+  } catch {
+    /* user cancelled the share sheet */
   }
-  return [{ name: 'Accueil', type: 'home' }];
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    /* clipboard may be blocked */
+  }
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function onCameraChange(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  const done = imageWaiter;
+  imageWaiter = null;
+  if (!done) {
+    return;
+  }
+  if (!file) {
+    done(null);
+    return;
+  }
+  void readFileAsDataUrl(file).then(done, () => done(null));
+}
+
+function onFileChange(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  const done = fileWaiter;
+  fileWaiter = null;
+  if (!done) {
+    return;
+  }
+  if (!file) {
+    done(null);
+    return;
+  }
+  void readFileAsDataUrl(file).then(
+    (dataUrl) => done({ name: file.name, dataUrl }),
+    () => done(null),
+  );
+}
+
+async function onMessage(event: MessageEvent): Promise<void> {
+  if (event.source !== frame.value?.contentWindow) {
+    return;
+  }
+  const data = event.data as RuntimeRequest | undefined;
+  if (!data || data.type !== 'runtime' || !data.id) {
+    return;
+  }
+  const spec = props.spec ?? { capabilities: [] };
+  const reply = { type: 'runtime-result', id: data.id } as {
+    type: string;
+    id: string;
+    result?: unknown;
+    error?: string;
+  };
+  try {
+    reply.result = await handleRuntimeCall(
+      appId.value,
+      spec,
+      data.method,
+      data.params ?? {},
+      { pickImage, pickFile, share },
+    );
+  } catch (err) {
+    reply.error = err instanceof Error ? err.message : 'runtime error';
+  }
+  const guest = frame.value?.contentWindow;
+  guest?.postMessage(reply, '*');
+}
+
+onMounted(() => {
+  window.addEventListener('message', onMessage);
 });
 
-const current = ref(0);
-const page = computed(() => pages.value[current.value] ?? pages.value[0]);
+onUnmounted(() => {
+  window.removeEventListener('message', onMessage);
+});
+
+watch(srcdoc, () => {
+  imageWaiter?.(null);
+  fileWaiter?.(null);
+  imageWaiter = null;
+  fileWaiter = null;
+});
 </script>
 
 <template>
-  <div class="app">
-    <main class="body">
-      <h1>{{ page.name }}</h1>
-      <p v-if="!spec?.pages?.length">
-        Ton application est encore vide. Ouvre le bouton Uforge pour la
-        décrire, petit à petit.
-      </p>
-      <p v-else-if="page.type === 'dashboard'">Tes chiffres du jour.</p>
-      <p v-else-if="page.type === 'crud'">Tes listes, à ajouter et modifier ici.</p>
-      <p v-else>L’écran {{ page.name }} de ton application.</p>
-    </main>
-    <nav v-if="pages.length > 1" class="tabs">
-      <button
-        v-for="(item, index) in pages"
-        :key="item.name"
-        type="button"
-        :class="{ on: index === current }"
-        @click="current = index"
-      >
-        {{ item.name }}
-      </button>
-    </nav>
+  <div class="stage">
+    <iframe
+      :key="frameKey"
+      ref="frame"
+      class="guest"
+      sandbox="allow-scripts"
+      :srcdoc="srcdoc"
+      :title="appName"
+    />
+    <input
+      ref="cameraInput"
+      type="file"
+      accept="image/*"
+      capture="environment"
+      class="hidden-input"
+      @change="onCameraChange"
+    />
+    <input
+      ref="fileInput"
+      type="file"
+      class="hidden-input"
+      @change="onFileChange"
+    />
   </div>
 </template>
 
 <style scoped>
-.app {
-  display: flex;
-  flex-direction: column;
+.stage {
   min-height: 100vh;
   background: #f4efe8;
-  color: #1c1814;
 }
-.body {
-  flex: 1;
-  padding: 1.6rem 1.3rem 6rem;
-}
-.body h1 {
-  margin: 0 0 0.7rem;
-  font-family: var(--serif);
-  font-size: 2rem;
-  font-weight: 400;
-}
-.body p {
-  margin: 0;
-  color: #5c564e;
-  line-height: 1.55;
-  max-width: 22rem;
-}
-.tabs {
-  display: flex;
-  border-top: 1px solid #e4dcd0;
-  background: #fffdf9;
-}
-.tabs button {
-  flex: 1;
+.guest {
+  display: block;
+  width: 100%;
+  height: 100vh;
   border: 0;
-  background: transparent;
-  padding: 0.9rem 0.35rem;
-  font-size: 0.78rem;
-  color: #8a8278;
-  cursor: pointer;
+  background: #f4efe8;
 }
-.tabs button.on {
-  color: #1c1814;
-  font-weight: 600;
+.hidden-input {
+  display: none;
 }
 </style>

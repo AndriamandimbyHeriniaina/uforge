@@ -5,6 +5,7 @@ import {
   type HappEnvelope,
   type LocalHapp,
 } from './happCrypto';
+import { clearAllOverlays } from './runtime/overlay';
 
 export type { HappEnvelope, LocalHapp };
 
@@ -82,21 +83,37 @@ export function isBuilderUnlocked(): boolean {
 }
 
 const HAPP_PAYLOAD_KEY = 'uforge-happ-payload';
+const PASS_KEY = 'uforge-session-pass';
 
 let sessionPassword: string | null = null;
 
 /**
- * Keeps the account password in RAM for this tab (never written to disk).
+ * Keeps the account password for this browser tab (sessionStorage, not the .happ).
  *
  * @example
  * setSessionPassword('correct-horse');
  */
 export function setSessionPassword(password: string): void {
   sessionPassword = password;
+  sessionStorage.setItem(PASS_KEY, password);
 }
 
 export function clearSessionPassword(): void {
   sessionPassword = null;
+  sessionStorage.removeItem(PASS_KEY);
+}
+
+/**
+ * Returns the Builder-session password, restored after a refresh of this tab.
+ *
+ * @example
+ * const secret = getSessionPassword();
+ */
+export function getSessionPassword(): string {
+  if (!sessionPassword) {
+    sessionPassword = sessionStorage.getItem(PASS_KEY);
+  }
+  return sessionPassword ?? '';
 }
 
 export function hasCompiledHapp(): boolean {
@@ -160,9 +177,9 @@ export async function unlockLocalHapp(password: string): Promise<LocalHapp> {
  * const happ = await compileOnDevice(app);
  */
 export async function compileOnDevice(app: UforgeApp): Promise<LocalHapp> {
-  const password = sessionPassword;
+  const password = getSessionPassword();
   if (!password) {
-    throw new Error('Reconnecte-toi pour enregistrer l’appli');
+    throw new Error('Entre ton mot de passe pour chiffrer l’appli');
   }
   const profile = await me();
   const happ: LocalHapp = {
@@ -177,6 +194,45 @@ export async function compileOnDevice(app: UforgeApp): Promise<LocalHapp> {
     body: JSON.stringify({}),
   }).catch(() => app);
   return happ;
+}
+
+/**
+ * Removes the installed .happ and overlays. The Uforge account is kept.
+ *
+ * @example
+ * wipeInstalledApp();
+ */
+export function wipeInstalledApp(): void {
+  localStorage.removeItem(HAPP_KEY);
+  localStorage.removeItem(HAPP_PAYLOAD_KEY);
+  clearAllOverlays();
+}
+
+/**
+ * Resets the Builder draft on the gateway (empty spec). Account is kept.
+ *
+ * @example
+ * await resetCurrentApp();
+ */
+export function resetCurrentApp() {
+  return request<UforgeApp>('/v1/apps/current/reset', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+/**
+ * Drops uncompiled Builder work. The device app stays empty until « Utiliser mon appli ».
+ *
+ * @example
+ * await discardUncompiledWork();
+ */
+export async function discardUncompiledWork(): Promise<void> {
+  if (loadHappEnvelope()) {
+    return;
+  }
+  clearAllOverlays();
+  await resetCurrentApp();
 }
 
 async function request<T>(

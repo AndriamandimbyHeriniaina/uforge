@@ -2,6 +2,8 @@
 
 Bouton admin Builder, près du prompt. Confirmation (nom de l’app ou slider).
 
+MVP : un bouton **Tout remettre à zéro**, confirmation en deux clics. Efface overlay + `.happ` local + draft Builder. Le compte Uforge reste.
+
 | Action | Effet |
 | --- | --- |
 | Réinitialiser les données | Overlay détruit ; seed du `.happ` recopié |

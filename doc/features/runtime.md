@@ -4,15 +4,17 @@ Moteur installé une fois. Il exécute les `.happ`, expose le pont device, isole
 
 ## Fournit
 
-Rendu WebView, navigation, SQLite overlay, fichiers sandbox, pont APIs, vérification signature `.happ`, permissions par manifest, Builder.
+Rendu WebView, navigation, SQLite overlay (MVP : JSON overlay hors paquet), fichiers sandbox, pont APIs, vérification signature `.happ`, permissions par manifest, Builder.
 
 ## Ne fournit pas dans le `.happ`
 
-Vue, Vite, plugins natifs, le Builder. Ce sont des **externals**.
+Vue, Vite, plugins natifs, le Builder. Ce sont des **externals**. Tant que le compiler n’émet pas de JS, le Runtime fournit aussi le **lecteur de spec** (CRUD, vitrine, canvas).
 
 ## Isolation
 
-L’app cliente tourne dans une iframe / WebView à origine nulle et n’appelle le natif que via `postMessage` → pont. Pas d’`openBuilder()`.
+L’app cliente tourne dans une iframe `sandbox="allow-scripts"` (origine opaque, pas de `allow-same-origin`) et n’appelle le natif que via `postMessage` → `runtime.*`. Pas d’`openBuilder()`.
+
+Le `.happ` déchiffré n’est injecté que comme JSON (spec). Les écritures live vont dans l’overlay `uforge-overlay:<appId>`, jamais dans le paquet chiffré.
 
 ## Cibles
 

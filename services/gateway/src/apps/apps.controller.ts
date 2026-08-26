@@ -25,6 +25,11 @@ export class AppsController {
     return this.apps.markCompiledOnDevice(req.user.sub);
   }
 
+  @Post('current/reset')
+  reset(@Req() req: Request & { user: AuthUser }) {
+    return this.apps.resetCurrent(req.user.sub);
+  }
+
   @Post()
   create(
     @Req() req: Request & { user: AuthUser },

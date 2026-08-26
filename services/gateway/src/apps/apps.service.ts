@@ -88,6 +88,25 @@ export class AppsService {
     });
   }
 
+  /**
+   * Empties the Builder draft. Does not delete the Uforge account.
+   *
+   * @example
+   * await appsService.resetCurrent(userId);
+   */
+  async resetCurrent(ownerId: string) {
+    const app = await this.ensureCurrent(ownerId);
+    await this.prisma.draft.updateMany({
+      where: { appId: app.id },
+      data: { specJson: {} },
+    });
+    return this.prisma.app.update({
+      where: { id: app.id },
+      data: { status: 'EMPTY', name: 'Mon application' },
+      include: { drafts: { orderBy: { revision: 'desc' }, take: 1 } },
+    });
+  }
+
   async getOwned(ownerId: string, appId: string) {
     const app = await this.prisma.app.findFirst({
       where: { id: appId, ownerId },

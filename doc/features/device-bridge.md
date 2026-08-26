@@ -18,6 +18,6 @@ Toute capacité absente du manifest → erreur permission. Toute API non implém
 
 Plugins **dans le Runtime** (Capacitor). Le `.happ` ne shippe pas de Kotlin/Swift.
 
-V1 : storage, files, camera, share. Bluetooth et le reste : pont typé, plugin plus tard.
+V1 web : `storage`, `database` (collections overlay), `files`, `camera` (capture via le Runtime mère), `share`. Bluetooth : pont typé, plugin plus tard.
 
 Wifi scan / association forcée : borné par iOS/Android, pas par Uforge. Ne pas promettre un contrôle réseau total.

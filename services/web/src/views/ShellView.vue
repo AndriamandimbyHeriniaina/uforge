@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import FloatButton from '../components/FloatButton.vue';
-import GeneratedApp, { type AppSpec } from '../components/GeneratedApp.vue';
+import GeneratedApp from '../components/GeneratedApp.vue';
 import UforgePanel from '../components/UforgePanel.vue';
+import type { AppSpec } from '../runtime/types';
 import {
   clearToken,
   currentApp,
@@ -115,6 +116,13 @@ function onUnlocked(happ: LocalHapp): void {
   app.value = previewFromHapp(happ);
 }
 
+function onWiped(): void {
+  decryptedHapp.value = null;
+  envelope.value = loadHappEnvelope();
+  app.value = null;
+  showToast('Tout est remis à zéro.');
+}
+
 onMounted(() => {
   void load();
   const sealed = Boolean(loadHappEnvelope()) && !decryptedHapp.value;
@@ -126,7 +134,7 @@ onMounted(() => {
 
 <template>
   <div class="shell">
-    <GeneratedApp :spec="spec" :app-name="previewName" />
+    <GeneratedApp :spec="spec" :app-name="previewName" :app-id="app?.id" />
     <FloatButton
       :hidden="panelOpen"
       :label="hasHapp && !hasAccount ? 'Connexion Uforge' : 'Compte Uforge'"
@@ -142,6 +150,7 @@ onMounted(() => {
       @refresh="load"
       @compiled="onCompiled"
       @unlocked="onUnlocked"
+      @wiped="onWiped"
     />
     <p v-if="toast" class="toast">{{ toast }}</p>
   </div>

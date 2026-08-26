@@ -23,6 +23,7 @@ Backend propriétaire. Le Runtime et le Builder ne parlent **jamais** à OpenAI,
 | `GET` | `/v1/apps` | Apps de l’utilisateur |
 | `GET` | `/v1/apps/current` | App unique de ce Runtime |
 | `POST` | `/v1/apps/current/compile` | Accusé de compile (pas de binaire `.happ`) |
+| `POST` | `/v1/apps/current/reset` | Vide le draft Builder (compte intact) |
 | `POST` | `/v1/apps` | Créer une app (draft vide) |
 | `POST` | `/v1/ai/generate` | Génération cadrée par les skills |
 | `GET` | `/v1/skills` | Liste des skills déposées (admin) |

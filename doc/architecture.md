@@ -114,7 +114,7 @@ Le gateway ne contient pas la base métier de l’app cliente, **ni le `.happ`**
 
 1. `docker compose up` : postgres, redis, minio, gateway, compiler stub, web stub.
 2. Auth + `POST /v1/ai/generate` avec injection skills.
-3. Runtime web : charger un `.happ` factice (stock + mini canvas).
+3. Runtime web : iframe sandbox + `runtime.*` + lecteur de spec.
 4. Pont device (camera/files) derrière le manifest.
 5. Compiler réel + seed/overlay.
 6. Capacitor Android.
