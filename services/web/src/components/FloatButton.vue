@@ -10,7 +10,7 @@ const emit = defineEmits<{
   open: [];
 }>();
 
-const STORAGE = 'uforge-fab';
+const STORAGE = 'uforge-fab-v2';
 const SIZE = 56;
 const THRESHOLD = 18;
 const pos = ref({ x: 24, y: 24 });
@@ -113,13 +113,13 @@ onMounted(() => {
     } catch {
       pos.value = clampPosition({
         x: window.innerWidth - 72,
-        y: window.innerHeight - 96,
+        y: 24,
       });
     }
   } else {
     pos.value = clampPosition({
       x: window.innerWidth - 72,
-      y: window.innerHeight - 96,
+      y: 24,
     });
   }
   window.addEventListener('resize', onResize);

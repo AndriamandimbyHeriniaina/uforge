@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { effectiveDailyGenerations } from '../quota.util';
 import { LoginDto, RegisterDto } from './auth.dto';
 
 @Injectable()
@@ -63,7 +64,7 @@ export class AuthService {
   }
 
   async me(userId: string) {
-    return this.prisma.user.findUniqueOrThrow({
+    const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
       select: {
         id: true,
@@ -74,6 +75,19 @@ export class AuthService {
         quota: true,
       },
     });
+    if (!user.quota) {
+      return user;
+    }
+    return {
+      ...user,
+      quota: {
+        ...user.quota,
+        dailyGenerations: effectiveDailyGenerations(
+          user.quota.dailyGenerations,
+          this.config,
+        ),
+      },
+    };
   }
 
   private sign(sub: string, email: string, role: 'USER' | 'ADMIN'): string {

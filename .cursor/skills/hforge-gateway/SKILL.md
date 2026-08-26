@@ -9,5 +9,5 @@ Read [doc/features/gateway.md](../../../doc/features/gateway.md), [doc/techno/ne
 
 - Entities live in `services/gateway/prisma/schema.prisma`.
 - `POST /v1/ai/generate` must load `skills/prompt` on **every** request via `SkillsService`.
-- Provider API keys stay in gateway env only.
+- Provider API keys stay in gateway env only (`AI_PROVIDER`, `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
 - Never store a `.happ` (artefact stays on the device).

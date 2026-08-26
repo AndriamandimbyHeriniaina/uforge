@@ -38,6 +38,17 @@ Sortie : `requestId`, `status`, `skillsApplied[]`, `spec` (JSON), `refusal?`.
 
 Les clés providers restent dans les variables d’environnement du service `gateway`. Jamais dans le `.happ` ni le frontend.
 
+## Providers
+
+`AI_PROVIDER` = `openai` | `anthropic` | `stub`.
+
+- `OPENAI_API_KEY`, optionnel `OPENAI_BASE_URL` (proxy compatible), `OPENAI_MODEL` (défaut `gpt-4o-mini`).
+- `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`.
+- Sans clé, le gateway retombe sur le stub (mots-clés), pour que `docker compose` tourne quand même.
+
+
 ## Développement
 
 Code : `services/gateway`. Schéma : Prisma. Au changement d’entité : `npx prisma migrate dev` dans le conteneur ou en local contre Postgres Compose.
+
+Hors production (`NODE_ENV` ≠ `production`, Compose inclus), le quota journalier de génération est porté à **30** (le plan FREE reste à 5 en prod). Le compteur Redis du jour n’est pas réinitialisé.

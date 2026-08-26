@@ -133,8 +133,15 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="shell">
-    <GeneratedApp :spec="spec" :app-name="previewName" :app-id="app?.id" />
+  <div class="shell" :class="{ split: panelOpen && panelKind === 'workshop' }">
+    <div class="preview">
+      <GeneratedApp
+        :spec="spec"
+        :app-name="previewName"
+        :app-id="app?.id"
+        :compact="panelOpen && panelKind === 'workshop'"
+      />
+    </div>
     <FloatButton
       :hidden="panelOpen"
       :label="hasHapp && !hasAccount ? 'Connexion Uforge' : 'Compte Uforge'"
@@ -159,6 +166,34 @@ onMounted(() => {
 <style scoped>
 .shell {
   min-height: 100vh;
+  min-height: 100dvh;
+}
+.preview {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.shell.split {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+.shell.split .preview {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+}
+.shell.split .preview :deep(.stage) {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.shell.split .toast {
+  top: 0.8rem;
+  bottom: auto;
 }
 .toast {
   position: fixed;

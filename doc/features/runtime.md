@@ -12,7 +12,7 @@ Vue, Vite, plugins natifs, le Builder. Ce sont des **externals**. Tant que le co
 
 ## Isolation
 
-L’app cliente tourne dans une iframe `sandbox="allow-scripts"` (origine opaque, pas de `allow-same-origin`) et n’appelle le natif que via `postMessage` → `runtime.*`. Pas d’`openBuilder()`.
+L’app cliente tourne dans une iframe `sandbox="allow-scripts"` (origine opaque, pas de `allow-same-origin`) et n’appelle le natif que via `postMessage` → `runtime.*`. Pas d’`openBuilder()`. Pendant la conversation Builder, aperçu et feuille sont des blocs flex **distincts** (pas de calque au-dessus de l’iframe : les taps mobiles ne passent pas à travers).
 
 Le `.happ` déchiffré n’est injecté que comme JSON (spec). Les écritures live vont dans l’overlay `uforge-overlay:<appId>`, jamais dans le paquet chiffré.
 

@@ -51,12 +51,6 @@ const loggedIn = ref(props.kind === 'workshop');
 const thread = ref<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
 const scroller = ref<HTMLElement | null>(null);
 
-const SUGGESTIONS = [
-  'Je veux gérer mon stock',
-  'Une vitrine pour mon salon',
-  'Un petit jeu avec un score',
-];
-
 function loadThread(): void {
   const spec = props.app?.drafts?.[0]?.specJson as AppSpec | undefined;
   thread.value = spec?.conversation ? [...spec.conversation] : [];
@@ -200,13 +194,12 @@ onMounted(() => {
 <template>
   <div
     class="overlay"
-    :class="{ calm: kind !== 'workshop' }"
+    :class="{ calm: kind !== 'workshop', peek: kind === 'workshop' }"
   >
     <button
-      v-if="kind !== 'welcome' && !blocking"
+      v-if="kind === 'lock' && !blocking"
       type="button"
-      class="backdrop"
-      :class="{ light: kind === 'lock' }"
+      class="backdrop light"
       aria-label="Fermer"
       @click="emit('close')"
     />
@@ -298,16 +291,6 @@ onMounted(() => {
             Dis ce que tu veux, puis ajuste. Pas besoin de tout écrire d’un
             coup. Quand c’est bon, tu l’utilises.
           </p>
-          <button
-            v-for="item in SUGGESTIONS"
-            v-show="thread.length === 0"
-            :key="item"
-            type="button"
-            class="chip"
-            @click="send(item)"
-          >
-            {{ item }}
-          </button>
           <div v-for="(msg, i) in thread" :key="i" :class="['bubble', msg.role]">
             {{ msg.text }}
           </div>
@@ -378,6 +361,54 @@ onMounted(() => {
 .overlay.calm {
   align-items: center;
   padding: 1.5rem;
+}
+.overlay.peek {
+  position: relative;
+  inset: unset;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: auto;
+  flex: 0 0 auto;
+  padding: 0;
+  pointer-events: auto;
+}
+.overlay.peek .sheet {
+  width: 100%;
+  max-width: none;
+  max-height: min(46vh, 420px);
+  max-height: min(46dvh, 420px);
+  border-radius: 18px 18px 0 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.38);
+}
+.overlay.peek .sheet-top {
+  flex-shrink: 0;
+  padding: 0.7rem 1rem 0.35rem;
+}
+.overlay.peek h2 {
+  font-size: 1.25rem;
+}
+.overlay.peek .thread {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.overlay.peek .composer {
+  flex-shrink: 0;
+  gap: 0.4rem;
+  padding: 0.45rem 1rem calc(0.7rem + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--bg-elevated);
+}
+.overlay.peek .danger {
+  padding: 0.15rem 0 0;
+}
+.overlay.peek textarea {
+  min-height: 2.6rem;
+  max-height: 4.2rem;
+  resize: none;
 }
 .backdrop {
   position: absolute;
@@ -488,15 +519,6 @@ textarea {
   margin: 0 0 0.4rem;
   color: var(--muted);
   font-size: 0.95rem;
-}
-.chip {
-  text-align: left;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  color: var(--text);
-  border-radius: 12px;
-  padding: 0.65rem 0.8rem;
-  cursor: pointer;
 }
 .bubble {
   max-width: 90%;

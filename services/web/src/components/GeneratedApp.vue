@@ -8,6 +8,8 @@ const props = defineProps<{
   spec: AppSpec | null;
   appName: string;
   appId?: string;
+  /** True when the Builder sheet shares the screen (no overlap with the guest). */
+  compact?: boolean;
 }>();
 
 const frame = ref<HTMLIFrameElement | null>(null);
@@ -167,7 +169,7 @@ watch(srcdoc, () => {
 </script>
 
 <template>
-  <div class="stage">
+  <div class="stage" :class="{ compact }">
     <iframe
       :key="frameKey"
       ref="frame"
@@ -196,14 +198,25 @@ watch(srcdoc, () => {
 <style scoped>
 .stage {
   min-height: 100vh;
+  min-height: 100dvh;
   background: #f4efe8;
+}
+.stage.compact {
+  min-height: 0;
+  height: 100%;
 }
 .guest {
   display: block;
   width: 100%;
   height: 100vh;
+  height: 100dvh;
   border: 0;
   background: #f4efe8;
+  pointer-events: auto;
+  touch-action: auto;
+}
+.stage.compact .guest {
+  height: 100%;
 }
 .hidden-input {
   display: none;

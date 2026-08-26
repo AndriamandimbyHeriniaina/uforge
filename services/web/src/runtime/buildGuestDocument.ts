@@ -15,11 +15,11 @@ export function buildGuestDocument(spec: AppSpec | null): string {
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <style>
     :root { color-scheme: light; }
     * { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; }
+    html, body { margin: 0; height: 100%; touch-action: manipulation; overscroll-behavior: none; }
     body {
       font-family: ui-sans-serif, system-ui, sans-serif;
       background: #f4efe8;
@@ -27,11 +27,19 @@ export function buildGuestDocument(spec: AppSpec | null): string {
       display: flex;
       flex-direction: column;
     }
-    #root { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-    header.hero { padding: 1.4rem 1.2rem 0.8rem; }
-    header.hero h1 { margin: 0; font-size: 1.7rem; font-weight: 600; }
-    header.hero p { margin: 0.4rem 0 0; color: #5c564e; line-height: 1.45; }
-    main { flex: 1; overflow: auto; padding: 0 1.2rem 6rem; }
+    #root { flex: 1; display: flex; flex-direction: column; min-height: 0; height: 100%; }
+    header.hero { flex-shrink: 0; padding: 0.75rem 1rem 0.4rem; }
+    header.hero h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+    header.hero p { margin: 0.3rem 0 0; color: #5c564e; line-height: 1.4; font-size: 0.9rem; }
+    @media (max-height: 480px) { header.hero p { display: none; } }
+    main { flex: 1; overflow: auto; padding: 0 1.2rem 6rem; -webkit-overflow-scrolling: touch; min-height: 0; }
+    main.play {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 0 1rem 0.5rem;
+      touch-action: none;
+    }
     .card {
       background: #fffdf9;
       border: 1px solid #e4dcd0;
@@ -83,10 +91,23 @@ export function buildGuestDocument(spec: AppSpec | null): string {
       cursor: pointer;
     }
     nav.tabs button.on { color: #1c1814; font-weight: 600; }
-    canvas { width: 100%; height: 220px; display: block; background: #1c1814; border-radius: 16px; }
-    .muted { color: #5c564e; }
+    nav.tabs { flex-shrink: 0; }
+    canvas {
+      flex: 1 1 auto;
+      width: 100%;
+      min-height: 120px;
+      height: auto;
+      display: block;
+      background: #1c1814;
+      border-radius: 16px;
+      touch-action: none;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    button.act, button.ghost, nav.tabs button { touch-action: manipulation; }
+    .muted { color: #5c564e; flex-shrink: 0; }
     img.shot { width: 100%; border-radius: 12px; margin-top: 0.6rem; }
-    .score { font-size: 2.4rem; font-weight: 700; margin: 0.4rem 0; }
+    .score { font-size: 1.7rem; font-weight: 700; margin: 0.15rem 0; flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -106,7 +127,12 @@ function guestPlayerSource(): string {
   var pages = spec.pages && spec.pages.length ? spec.pages : [{ name: 'Accueil', type: 'home' }];
   var appName = (spec.app && spec.app.name) || 'Mon application';
   var current = 0;
+  var gameGen = 0;
   var root = document.getElementById('root');
+  pages.some(function (page, index) {
+    if (page.type === 'game') { current = index; return true; }
+    return false;
+  });
 
   function hue(name) {
     var h = 0;
@@ -165,6 +191,27 @@ function guestPlayerSource(): string {
     return node;
   }
 
+  function pointFrom(event) {
+    var t = (event.changedTouches && event.changedTouches[0])
+      || (event.touches && event.touches[0])
+      || event;
+    return { x: Number(t.clientX || 0), y: Number(t.clientY || 0) };
+  }
+
+  function bindTap(node, handler) {
+    var last = 0;
+    function wrap(event) {
+      if (event.cancelable) event.preventDefault();
+      var now = Date.now();
+      if (event.type === 'click' && now - last < 400) return;
+      if (event.type !== 'click') last = now;
+      handler(event);
+    }
+    node.addEventListener('pointerdown', wrap);
+    node.addEventListener('touchstart', wrap, { passive: false });
+    node.addEventListener('click', wrap);
+  }
+
   function collectionName(page) {
     var type = page.type || '';
     if (type === 'crud') return (page.name || 'items').toLowerCase().replace(/\\s+/g, '-');
@@ -173,6 +220,7 @@ function guestPlayerSource(): string {
   }
 
   async function render() {
+    gameGen += 1;
     var page = pages[current] || pages[0];
     root.textContent = '';
     var hero = el('header', { class: 'hero' }, [
@@ -180,12 +228,14 @@ function guestPlayerSource(): string {
       el('p', { text: emptyCopy(page) })
     ]);
     var main = el('main', {});
+    if (page.type === 'game' || page.name === 'Jouer') main.className = 'play';
     var nav = el('nav', { class: 'tabs' });
     if (pages.length > 1) {
       pages.forEach(function (item, index) {
         nav.appendChild(el('button', {
           class: index === current ? 'on' : '',
           text: item.name,
+          type: 'button',
           onClick: function () { current = index; render(); }
         }));
       });
@@ -212,7 +262,7 @@ function guestPlayerSource(): string {
     }
     if (page.type === 'crud') return 'Tes listes, à ajouter et modifier ici.';
     if (page.type === 'dashboard') return 'Un aperçu de ce qui compte.';
-    if (page.name === 'Jouer') return 'Touche pour marquer des points.';
+    if (page.type === 'game') return 'Touche le point pour marquer.';
     return appName;
   }
 
@@ -272,6 +322,7 @@ function guestPlayerSource(): string {
   }
 
   async function renderGame(main) {
+    var token = gameGen;
     var best = 0;
     try {
       var scores = await window.runtime.db.query('scores');
@@ -282,36 +333,86 @@ function guestPlayerSource(): string {
     } catch (e) {}
     var score = 0;
     var label = el('p', { class: 'score', text: '0' });
-    var bestEl = el('p', { class: 'muted', text: 'Meilleur : ' + best });
+    var hint = el('p', { class: 'muted', text: 'Touche le point. Meilleur : ' + best });
     var canvas = el('canvas', {});
     var ctx = canvas.getContext('2d');
+    var target = { x: 0.5, y: 0.5, vx: 0.004, vy: -0.003 };
+    function size() {
+      var w = Math.max(canvas.clientWidth, 240);
+      var h = Math.max(canvas.clientHeight, 160);
+      canvas.width = Math.floor(w * 2);
+      canvas.height = Math.floor(h * 2);
+    }
+    function scramble() {
+      target.x = 0.18 + Math.random() * 0.64;
+      target.y = 0.18 + Math.random() * 0.64;
+      var speed = 0.003 + Math.random() * 0.006;
+      var angle = Math.random() * Math.PI * 2;
+      target.vx = Math.cos(angle) * speed;
+      target.vy = Math.sin(angle) * speed;
+    }
     function paint() {
-      canvas.width = canvas.clientWidth * 2;
-      canvas.height = 440;
+      if (!ctx) return;
+      var w = canvas.width;
+      var h = canvas.height;
       ctx.fillStyle = '#1c1814';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = 'hsl(' + hue(appName) + ' 48% 52%)';
-      var r = 36 + (score % 12);
+      ctx.fillRect(0, 0, w, h);
+      var px = target.x * w;
+      var py = target.y * h;
+      var r = Math.max(28, w * 0.045);
       ctx.beginPath();
-      ctx.arc(canvas.width / 2, canvas.height / 2, r * 2, 0, Math.PI * 2);
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.fillStyle = 'hsl(' + hue(appName) + ' 62% 58%)';
       ctx.fill();
     }
-    canvas.addEventListener('pointerdown', async function () {
+    function step() {
+      if (token !== gameGen) return;
+      target.x += target.vx;
+      target.y += target.vy;
+      if (target.x < 0.12 || target.x > 0.88) target.vx *= -1;
+      if (target.y < 0.12 || target.y > 0.88) target.vy *= -1;
+      target.x = Math.min(0.88, Math.max(0.12, target.x));
+      target.y = Math.min(0.88, Math.max(0.12, target.y));
+      paint();
+      requestAnimationFrame(step);
+    }
+    async function onTap(event) {
+      var p = pointFrom(event);
+      var rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      var x = (p.x - rect.left) / rect.width;
+      var y = (p.y - rect.top) / rect.height;
+      var dx = x - target.x;
+      var dy = y - target.y;
+      if (dx * dx + dy * dy > 0.16) return;
       score += 1;
       label.textContent = String(score);
+      scramble();
       paint();
       if (score > best) {
         best = score;
-        bestEl.textContent = 'Meilleur : ' + best;
+        hint.textContent = 'Touche le point. Meilleur : ' + best;
         try {
           await window.runtime.db.upsert('scores', { id: 'best', score: best });
         } catch (e) {}
       }
-    });
+    }
+    canvas.setAttribute('role', 'button');
+    bindTap(canvas, onTap);
     main.appendChild(label);
-    main.appendChild(bestEl);
+    main.appendChild(hint);
     main.appendChild(canvas);
-    requestAnimationFrame(paint);
+    function fit() {
+      if (token !== gameGen) return;
+      size();
+      paint();
+    }
+    window.addEventListener('resize', fit);
+    requestAnimationFrame(function () {
+      scramble();
+      fit();
+      requestAnimationFrame(step);
+    });
   }
 
   async function renderPhotos(main) {
@@ -333,10 +434,22 @@ function guestPlayerSource(): string {
   }
 
   function renderVitrine(main, page) {
-    main.appendChild(el('div', { class: 'card' }, [
+    var gameIndex = -1;
+    pages.forEach(function (item, index) {
+      if (item.type === 'game' && gameIndex < 0) gameIndex = index;
+    });
+    var kids = [
       el('p', { text: page.name }),
       el('p', { class: 'muted', text: 'L’écran ' + page.name + ' de ' + appName + '.' })
-    ]));
+    ];
+    if (gameIndex >= 0) {
+      kids.push(el('button', {
+        class: 'act',
+        text: 'Jouer',
+        onClick: function () { current = gameIndex; render(); }
+      }));
+    }
+    main.appendChild(el('div', { class: 'card' }, kids));
   }
 
   render();

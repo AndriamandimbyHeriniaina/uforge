@@ -23,6 +23,8 @@ docker compose up --build
 
 Compte admin bootstrap : email `BOOTSTRAP_ADMIN_EMAIL` (défaut `admin@hforge.local`), mot de passe au moins 8 caractères à l’inscription.
 
+IA : dans `.env`, `AI_PROVIDER=openai` (ou `anthropic`) et la clé. Sans clé, `stub`.
+
 ## Skills prompt (cadrage utilisateurs)
 
 Dépose des markdown dans [`skills/prompt/`](skills/prompt/). Relus **à chaque** génération, sans rebuild. Voir [`doc/features/prompt-skills.md`](doc/features/prompt-skills.md).

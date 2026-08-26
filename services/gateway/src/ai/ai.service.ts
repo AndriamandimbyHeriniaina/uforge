@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -7,10 +8,14 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma, UserRole } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { SkillsService } from '../skills/skills.service';
 import { GenerateDto } from '../apps/apps.dto';
+import { effectiveDailyGenerations } from '../quota.util';
+import { ProviderRouter } from './providers/provider.router';
+import type { AppSpec } from './providers/provider.types';
 
 @Injectable()
 export class AiService {
@@ -18,11 +23,12 @@ export class AiService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly skills: SkillsService,
+    private readonly providers: ProviderRouter,
+    private readonly config: ConfigService,
   ) {}
 
   /**
-   * Runs one Builder generation: reload skills from disk, enforce quota,
-   * persist a Generation row, then call the provider stub (real adapters later).
+   * Runs one Builder generation: reload skills, enforce quota, call the LLM adapter.
    *
    * @example
    * const result = await aiService.generate(userId, {
@@ -45,7 +51,11 @@ export class AiService {
     }
 
     const used = await this.redis.incrDaily('generations', userId);
-    if (used > quota.dailyGenerations && user.role !== UserRole.ADMIN) {
+    const dailyLimit = effectiveDailyGenerations(
+      quota.dailyGenerations,
+      this.config,
+    );
+    if (used > dailyLimit && user.role !== UserRole.ADMIN) {
       throw new HttpException('daily generation quota exceeded', HttpStatus.TOO_MANY_REQUESTS);
     }
 
@@ -60,6 +70,7 @@ export class AiService {
 
     const loaded = await this.skills.loadForPrompt();
     const requestId = randomUUID();
+    const providerName = this.providers.activeName();
     const generation = await this.prisma.generation.create({
       data: {
         requestId,
@@ -70,12 +81,11 @@ export class AiService {
         skillsApplied: loaded.names,
         skillsHash: loaded.hash,
         status: 'RUNNING',
-        provider: 'stub',
-        model: 'hforge-stub-v0',
+        provider: providerName,
       },
     });
 
-    const refusal = this.detectHardRefusal(dto.prompt, loaded.block);
+    const refusal = this.detectHardRefusal(dto.prompt);
     if (refusal) {
       await this.prisma.generation.update({
         where: { id: generation.id },
@@ -101,22 +111,66 @@ export class AiService {
           orderBy: { revision: 'desc' },
         })
       : null;
+    const currentSpec =
+      existingDraft?.specJson && typeof existingDraft.specJson === 'object'
+        ? (existingDraft.specJson as AppSpec)
+        : {};
 
-    const { spec, reply } = this.conversationalStub(
-      existingDraft?.specJson,
-      dto.prompt,
-    );
-    const inputTokens = Math.ceil((loaded.block.length + dto.prompt.length) / 4);
-    const outputTokens = Math.ceil(JSON.stringify(spec).length / 4);
+    let result;
+    try {
+      result = await this.providers.generate({
+        skillsBlock: loaded.block,
+        prompt: dto.prompt,
+        currentSpec,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'provider error';
+      await this.prisma.generation.update({
+        where: { id: generation.id },
+        data: {
+          status: 'FAILED',
+          refusalReason: message,
+          durationMs: Date.now() - started,
+        },
+      });
+      throw new BadGatewayException({
+        requestId,
+        status: 'FAILED',
+        message,
+        skillsApplied: loaded.names,
+      });
+    }
 
+    if (result.refusal) {
+      await this.prisma.generation.update({
+        where: { id: generation.id },
+        data: {
+          status: 'REFUSED',
+          refusalReason: result.refusal,
+          provider: result.provider,
+          model: result.model,
+          durationMs: Date.now() - started,
+        },
+      });
+      throw new ForbiddenException({
+        requestId,
+        status: 'REFUSED',
+        refusal: result.refusal,
+        skillsApplied: loaded.names,
+      });
+    }
+
+    const spec = result.spec;
     await this.prisma.$transaction([
       this.prisma.generation.update({
         where: { id: generation.id },
         data: {
           status: 'SUCCEEDED',
           resultSpec: spec as Prisma.InputJsonValue,
-          inputTokens,
-          outputTokens,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          provider: result.provider,
+          model: result.model,
           durationMs: Date.now() - started,
         },
       }),
@@ -124,8 +178,8 @@ export class AiService {
         data: {
           userId,
           generationId: generation.id,
-          inputTokens,
-          outputTokens,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
           estimatedCostUsd: 0,
         },
       }),
@@ -133,7 +187,10 @@ export class AiService {
         ? [
             this.prisma.app.update({
               where: { id: dto.appId },
-              data: { status: 'DRAFT' },
+              data: {
+                status: 'DRAFT',
+                ...(spec.app?.name ? { name: spec.app.name } : {}),
+              },
             }),
           ]
         : []),
@@ -161,12 +218,12 @@ export class AiService {
       status: 'SUCCEEDED',
       skillsApplied: loaded.names,
       spec,
-      reply,
-      provider: 'stub',
+      reply: result.reply,
+      provider: result.provider,
     };
   }
 
-  private detectHardRefusal(prompt: string, skillsBlock: string): string | null {
+  private detectHardRefusal(prompt: string): string | null {
     const lower = prompt.toLowerCase();
     const banned = ['keylogger', 'ransomware', 'phishing kit', 'csam'];
     for (const term of banned) {
@@ -174,111 +231,6 @@ export class AiService {
         return `refused by gateway policy (${term})`;
       }
     }
-    if (!skillsBlock.trim()) {
-      return null;
-    }
     return null;
-  }
-
-  private conversationalStub(existing: unknown, prompt: string) {
-    const prev =
-      existing && typeof existing === 'object' ? (existing as Record<string, unknown>) : {};
-    const previousPages = Array.isArray(prev.pages)
-      ? ([...prev.pages] as Array<{ name: string; type: string }>)
-      : [];
-    const previousCaps = Array.isArray(prev.capabilities)
-      ? [...(prev.capabilities as string[])]
-      : [];
-    const conversation = Array.isArray(prev.conversation)
-      ? [...(prev.conversation as Array<{ role: 'user' | 'assistant'; text: string }>)]
-      : [];
-    conversation.push({ role: 'user', text: prompt });
-
-    const first = previousPages.length === 0;
-    if (first) {
-      previousPages.push(...this.pagesFromPrompt(prompt));
-    } else {
-      const extra = this.extraPageFromPrompt(prompt);
-      if (extra && !previousPages.some((page) => page.name === extra.name)) {
-        previousPages.push(extra);
-      }
-    }
-
-    const reply = first
-      ? 'D’accord. Voici une première version. Dis-moi ce que tu veux ajouter ou changer — pas besoin de tout dire d’un coup.'
-      : 'C’est noté, j’ai ajusté. Tu peux continuer, et quand c’est bon tu utilises l’appli.';
-    conversation.push({ role: 'assistant', text: reply });
-
-    const prevApp = prev.app as { name?: string } | undefined;
-    const spec = {
-      app: {
-        name: prevApp?.name || this.nameFromPrompt(prompt),
-        runtime: { min_version: '1.0.0' },
-      },
-      capabilities: [...new Set([...previousCaps, ...this.guessCapabilities(prompt)])],
-      pages: previousPages,
-      conversation,
-    };
-    return { spec, reply };
-  }
-
-  private nameFromPrompt(prompt: string): string {
-    const lower = prompt.toLowerCase();
-    if (lower.includes('stock')) {
-      return 'Mon stock';
-    }
-    if (lower.includes('salon') || lower.includes('coiff')) {
-      return 'Mon salon';
-    }
-    if (lower.includes('jeu')) {
-      return 'Mon jeu';
-    }
-    return 'Mon application';
-  }
-
-  private pagesFromPrompt(prompt: string): Array<{ name: string; type: string }> {
-    const lower = prompt.toLowerCase();
-    if (lower.includes('jeu')) {
-      return [
-        { name: 'Jouer', type: 'custom' },
-        { name: 'Scores', type: 'dashboard' },
-      ];
-    }
-    if (lower.includes('stock')) {
-      return [
-        { name: 'Accueil', type: 'dashboard' },
-        { name: 'Produits', type: 'crud' },
-      ];
-    }
-    return [{ name: 'Accueil', type: 'custom' }];
-  }
-
-  private extraPageFromPrompt(prompt: string): { name: string; type: string } | null {
-    const lower = prompt.toLowerCase();
-    if (lower.includes('photo') || lower.includes('caméra') || lower.includes('camera')) {
-      return { name: 'Photos', type: 'custom' };
-    }
-    if (lower.includes('client')) {
-      return { name: 'Clients', type: 'crud' };
-    }
-    if (lower.includes('rdv') || lower.includes('rendez')) {
-      return { name: 'Agenda', type: 'custom' };
-    }
-    return null;
-  }
-
-  private guessCapabilities(prompt: string): string[] {
-    const lower = prompt.toLowerCase();
-    const caps: string[] = ['storage', 'database'];
-    if (lower.includes('camera') || lower.includes('photo') || lower.includes('barcode')) {
-      caps.push('camera');
-    }
-    if (lower.includes('bluetooth')) {
-      caps.push('bluetooth');
-    }
-    if (lower.includes('fichier') || lower.includes('file') || lower.includes('pdf')) {
-      caps.push('files');
-    }
-    return caps;
   }
 }
