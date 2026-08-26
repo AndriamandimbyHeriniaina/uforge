@@ -5,13 +5,18 @@ import {
   type HappEnvelope,
   type LocalHapp,
 } from './happCrypto';
+import { guestPlayerSource } from './runtime/guestPlayerSource';
 import { clearAllOverlays } from './runtime/overlay';
+import { seedSqlFromSpec } from './runtime/seedSql';
+import { clearSqliteOverlays } from './runtime/sqlite';
+import type { AppSpec, HappManifest } from './runtime/types';
 
 export type { HappEnvelope, LocalHapp };
 
 const TOKEN_KEY = 'uforge-token';
 const HAPP_KEY = 'uforge-has-happ';
 const GATEWAY = import.meta.env.VITE_GATEWAY_URL ?? 'http://localhost:3000';
+const COMPILER = import.meta.env.VITE_COMPILER_URL ?? 'http://localhost:3001';
 
 export type UforgeApp = {
   id: string;
@@ -182,11 +187,16 @@ export async function compileOnDevice(app: UforgeApp): Promise<LocalHapp> {
     throw new Error('Entre ton mot de passe pour chiffrer l’appli');
   }
   const profile = await me();
+  const spec = (app.drafts?.[0]?.specJson ?? null) as AppSpec | null;
+  const packed = await packWithCompiler(app, spec);
   const happ: LocalHapp = {
     email: profile.email,
-    name: app.name,
-    spec: app.drafts?.[0]?.specJson ?? null,
+    name: packed.manifest.name || app.name,
+    spec,
     appId: app.id,
+    bundleJs: packed.bundleJs,
+    seedSql: packed.seedSql,
+    manifest: packed.manifest,
   };
   await saveEncryptedHapp(happ, password);
   await request<UforgeApp>('/v1/apps/current/compile', {
@@ -196,16 +206,77 @@ export async function compileOnDevice(app: UforgeApp): Promise<LocalHapp> {
   return happ;
 }
 
+type PackedGuest = {
+  bundleJs?: string;
+  seedSql: string;
+  manifest: HappManifest;
+};
+
+/**
+ * Asks the compiler for a minified guest bundle. Falls back to local seed SQL
+ * if the compiler is unreachable; the .happ still stays on this device.
+ *
+ * @example
+ * const packed = await packWithCompiler(app, spec);
+ */
+async function packWithCompiler(
+  app: UforgeApp,
+  spec: AppSpec | null,
+): Promise<PackedGuest> {
+  const fallback: PackedGuest = {
+    seedSql: seedSqlFromSpec(spec),
+    manifest: {
+      id: app.id,
+      version: '1.0.0',
+      name: app.name,
+      runtime: { min_version: spec?.app?.runtime?.min_version ?? '1.0.0' },
+      capabilities: spec?.capabilities ?? ['storage', 'database'],
+    },
+  };
+  try {
+    const response = await fetch(`${COMPILER}/v1/compile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        spec,
+        playerSource: guestPlayerSource(),
+        appId: app.id,
+        appName: app.name,
+      }),
+    });
+    if (!response.ok) {
+      return fallback;
+    }
+    const body = (await response.json()) as {
+      status?: string;
+      bundleJs?: string;
+      seedSql?: string;
+      manifest?: HappManifest;
+    };
+    if (body.status !== 'ok' || !body.bundleJs) {
+      return fallback;
+    }
+    return {
+      bundleJs: body.bundleJs,
+      seedSql: body.seedSql || fallback.seedSql,
+      manifest: { ...fallback.manifest, ...body.manifest },
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * Removes the installed .happ and overlays. The Uforge account is kept.
  *
  * @example
- * wipeInstalledApp();
+ * await wipeInstalledApp();
  */
-export function wipeInstalledApp(): void {
+export async function wipeInstalledApp(): Promise<void> {
   localStorage.removeItem(HAPP_KEY);
   localStorage.removeItem(HAPP_PAYLOAD_KEY);
   clearAllOverlays();
+  await clearSqliteOverlays();
 }
 
 /**
@@ -232,6 +303,7 @@ export async function discardUncompiledWork(): Promise<void> {
     return;
   }
   clearAllOverlays();
+  await clearSqliteOverlays();
   await resetCurrentApp();
 }
 
@@ -310,8 +382,101 @@ export function currentApp() {
 }
 
 export function generate(prompt: string, appId: string, draftId?: string) {
-  return request<GenerateResult>('/v1/ai/generate', {
+  return generateStream(prompt, appId, () => undefined, draftId);
+}
+
+/**
+ * POSTs a prompt and reads SSE: `token` then a final `done` with the spec.
+ *
+ * @example
+ * await generateStream('Un stock', appId, (delta) => { bubble += delta; });
+ */
+export async function generateStream(
+  prompt: string,
+  appId: string,
+  onToken: (delta: string) => void,
+  draftId?: string,
+): Promise<GenerateResult> {
+  const headers = new Headers({ 'content-type': 'application/json' });
+  const token = getToken();
+  if (token) {
+    headers.set('authorization', `Bearer ${token}`);
+  }
+  const response = await fetch(`${GATEWAY}/v1/ai/generate`, {
     method: 'POST',
+    headers,
     body: JSON.stringify({ prompt, appId, draftId }),
   });
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('text/event-stream')) {
+    const body = (await response.json().catch(() => ({}))) as GenerateResult & {
+      message?: string | string[];
+    };
+    const message = Array.isArray(body.message)
+      ? body.message.join(', ')
+      : body.message ?? `Erreur ${response.status}`;
+    throw new Error(message);
+  }
+  if (!response.body) {
+    throw new Error('Réponse vide');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let donePayload: GenerateResult | null = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buf += decoder.decode(value, { stream: true });
+    const blocks = buf.split('\n\n');
+    buf = blocks.pop() ?? '';
+    for (const block of blocks) {
+      const event = parseSseBlock(block);
+      if (!event) {
+        continue;
+      }
+      if (event.event === 'token' && event.data && typeof event.data === 'object') {
+        const text = String((event.data as { text?: string }).text ?? '');
+        if (text) {
+          onToken(text);
+        }
+      }
+      if (event.event === 'error') {
+        const text = String((event.data as { message?: string })?.message ?? 'Erreur');
+        throw new Error(text);
+      }
+      if (event.event === 'done') {
+        donePayload = event.data as GenerateResult;
+      }
+    }
+  }
+  if (!donePayload) {
+    throw new Error('La génération s’est interrompue');
+  }
+  if (donePayload.status === 'FAILED') {
+    throw new Error(donePayload.message ?? 'Échec de génération');
+  }
+  return donePayload;
+}
+
+function parseSseBlock(block: string): { event: string; data: unknown } | null {
+  let event = 'message';
+  const dataLines: string[] = [];
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+  if (!dataLines.length) {
+    return null;
+  }
+  try {
+    return { event, data: JSON.parse(dataLines.join('\n')) };
+  } catch {
+    return null;
+  }
 }

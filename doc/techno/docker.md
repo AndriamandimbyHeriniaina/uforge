@@ -14,4 +14,6 @@ docker compose up --build
 
 Ne pas exposer Postgres/Redis sur `0.0.0.0` en production. En local, Postgres est publié sur le port hôte **5433** (5432 est souvent déjà occupé). Redis reste interne au réseau Compose.
 
-Healthchecks : `postgres`, `redis`, `gateway` (`GET /health`).
+Healthchecks : `postgres`, `redis`, `gateway` (`GET /health`). Compiler : `GET http://localhost:3001/health`.
+
+Le navigateur parle au compiler via `VITE_COMPILER_URL=http://localhost:3001` (pas `http://compiler:3001`).

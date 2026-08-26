@@ -1,5 +1,13 @@
-import { loadOverlay, saveOverlay } from './overlay';
-import type { AppSpec } from './types';
+import {
+  dbQuery,
+  dbRemove,
+  dbUpsert,
+  kvGet,
+  kvList,
+  kvRemove,
+  kvSet,
+} from './sqlite';
+import type { AppSpec, HappManifest } from './types';
 
 export type BridgeMedia = {
   pickImage: () => Promise<string | null>;
@@ -7,8 +15,14 @@ export type BridgeMedia = {
   share: (text: string) => Promise<void>;
 };
 
+export type BridgeExtras = {
+  seedSql?: string;
+  manifest?: HappManifest | null;
+};
+
 /**
  * Dispatches one guest `runtime.*` call. Missing capabilities are denied.
+ * Overlay writes go to SQLite (IndexedDB / native file), never into the .happ.
  *
  * @example
  * const result = await handleRuntimeCall(appId, spec, 'storage.get', { key: 'n' }, media);
@@ -19,60 +33,47 @@ export async function handleRuntimeCall(
   method: string,
   params: Record<string, unknown> = {},
   media: BridgeMedia,
+  extras: BridgeExtras = {},
 ): Promise<unknown> {
-  const caps = new Set(spec.capabilities ?? []);
+  const caps = new Set([
+    ...(spec.capabilities ?? []),
+    ...(extras.manifest?.capabilities ?? []),
+  ]);
   const need = capabilityFor(method);
   if (need && !caps.has(need)) {
     throw new Error(`permission denied: ${need}`);
   }
 
-  const overlay = loadOverlay(appId);
+  const seedSql = extras.seedSql;
 
   switch (method) {
     case 'capabilities.has':
       return caps.has(String(params.name ?? ''));
     case 'storage.get':
-      return overlay.kv[String(params.key ?? '')] ?? null;
+      return kvGet(appId, spec, String(params.key ?? ''), seedSql);
     case 'storage.set': {
-      overlay.kv[String(params.key ?? '')] = params.value ?? null;
-      saveOverlay(appId, overlay);
+      await kvSet(appId, spec, String(params.key ?? ''), params.value ?? null, seedSql);
       return true;
     }
     case 'storage.remove': {
-      delete overlay.kv[String(params.key ?? '')];
-      saveOverlay(appId, overlay);
+      await kvRemove(appId, spec, String(params.key ?? ''), seedSql);
       return true;
     }
     case 'storage.list':
-      return Object.keys(overlay.kv);
+      return kvList(appId, spec, seedSql);
     case 'db.list':
     case 'db.query': {
       const collection = String(params.collection ?? params.sql ?? 'items');
-      return overlay.collections[collection] ?? [];
+      return dbQuery(appId, spec, collection, seedSql);
     }
     case 'db.upsert': {
       const collection = String(params.collection ?? 'items');
       const record = (params.record ?? {}) as Record<string, unknown>;
-      const id = String(record.id ?? crypto.randomUUID());
-      const rows = overlay.collections[collection] ?? [];
-      const next = { ...record, id };
-      const index = rows.findIndex((row) => String(row.id) === id);
-      if (index >= 0) {
-        rows[index] = next;
-      } else {
-        rows.push(next);
-      }
-      overlay.collections[collection] = rows;
-      saveOverlay(appId, overlay);
-      return next;
+      return dbUpsert(appId, spec, collection, record, seedSql);
     }
     case 'db.remove': {
       const collection = String(params.collection ?? 'items');
-      const id = String(params.id ?? '');
-      overlay.collections[collection] = (overlay.collections[collection] ?? []).filter(
-        (row) => String(row.id) !== id,
-      );
-      saveOverlay(appId, overlay);
+      await dbRemove(appId, spec, collection, String(params.id ?? ''), seedSql);
       return true;
     }
     case 'camera.capture': {

@@ -10,10 +10,12 @@ Ne jamais écrire l’overlay **dans** le `.happ` à chaque save (signature, I/O
 
 | Couche | Lieu | Exemple |
 | --- | --- | --- |
-| Seed | Dans le `.happ` | Produits vitrine, maps du jeu |
-| Overlay | `data/<appId>/` hors paquet | Ventes, scores, photos |
-| Runtime mère | Store séparé | Liste d’apps, auth Builder |
+| Seed | Dans le `.happ` (`seedSql`) | Produits vitrine, maps du jeu |
+| Overlay | `data/<appId>/overlay.sqlite` (natif) ou IndexedDB (web) | Ventes, scores, photos |
+| Runtime mère | Store séparé | Auth Builder, `.happ` chiffré |
 
 JSON pour le statique ; SQLite pour le requêtable. Les deux peuvent être dans le seed.
+
+Le compiler émet le SQL de graine. Le Runtime ouvre l’overlay, crée `records` / `kv`, applique le seed **seulement** si la base est vide, puis migre un éventuel overlay JSON historique.
 
 Le gateway ne mixe pas ces bases avec Postgres (comptes Uforge uniquement).

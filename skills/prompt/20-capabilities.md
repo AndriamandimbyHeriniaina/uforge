@@ -12,5 +12,6 @@ Examples: `storage`, `database`, `camera`, `files`, `share`, `bluetooth`.
 
 Wi-Fi scan/control is usually blocked by the OS; do not promise it.
 
-If the user wants a "dummy Android game", implement an HTML5 canvas/WebGL game
-inside the Runtime, with optional SQLite for scores. Not a native game engine.
+If the user wants a game, implement THAT game as HTML5 canvas JS in `game.source`.
+Not a native engine. Not the generic click-the-dot toy unless they asked for it.
+Scores may use SQLite (`runtime.db`).

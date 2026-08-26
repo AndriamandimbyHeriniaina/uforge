@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { AnthropicAdapter } from './anthropic.adapter';
 import { OpenAiAdapter } from './openai.adapter';
 import { StubAdapter } from './stub.adapter';
-import type { LlmProvider, ProviderGenerateInput, ProviderGenerateResult } from './provider.types';
+import type { LlmProvider, ProviderGenerateInput, ProviderGenerateResult, StreamTokenFn } from './provider.types';
 
 /**
  * Picks the configured LLM adapter. Falls back to the stub if no key is set.
@@ -28,6 +28,20 @@ export class ProviderRouter {
    */
   generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult> {
     return this.active().generate(input);
+  }
+
+  /**
+   * Streams the user-facing reply, then returns the finished spec.
+   *
+   * @example
+   * const result = await router.generateStream(input, (delta) => write(delta));
+   */
+  generateStream(
+    input: ProviderGenerateInput,
+    onToken: StreamTokenFn,
+    signal?: AbortSignal,
+  ): Promise<ProviderGenerateResult> {
+    return this.active().generateStream(input, onToken, signal);
   }
 
   activeName(): string {

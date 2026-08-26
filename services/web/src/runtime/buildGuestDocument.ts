@@ -1,3 +1,4 @@
+import { guestPlayerSource } from './guestPlayerSource';
 import type { AppSpec } from './types';
 
 /**
@@ -11,6 +12,16 @@ export function buildGuestDocument(spec: AppSpec | null): string {
     /</g,
     '\\u003c',
   );
+  return wrapGuestDocument(`window.__HAPP_SPEC__ = ${safe};\n${guestPlayerSource()}`);
+}
+
+/**
+ * Wraps already-minified guest JS (compiler output) with Runtime CSS.
+ *
+ * @example
+ * iframe.srcdoc = wrapGuestDocument(packed.bundleJs);
+ */
+export function wrapGuestDocument(script: string): string {
   return `<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -48,6 +59,9 @@ export function buildGuestDocument(spec: AppSpec | null): string {
       margin: 0 0 0.7rem;
     }
     .row { display: flex; gap: 0.5rem; align-items: center; }
+    .row.wrap { flex-wrap: wrap; }
+    .stack { display: flex; flex-direction: column; gap: 0.4rem; }
+    .lbl { margin: 0; font-size: 0.78rem; color: #5c564e; }
     .grow { flex: 1; min-width: 0; }
     input, textarea {
       width: 100%;
@@ -107,351 +121,15 @@ export function buildGuestDocument(spec: AppSpec | null): string {
     button.act, button.ghost, nav.tabs button { touch-action: manipulation; }
     .muted { color: #5c564e; flex-shrink: 0; }
     img.shot { width: 100%; border-radius: 12px; margin-top: 0.6rem; }
+    img.thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
     .score { font-size: 1.7rem; font-weight: 700; margin: 0.15rem 0; flex-shrink: 0; }
   </style>
 </head>
 <body>
   <div id="root"></div>
   <script>
-    window.__HAPP_SPEC__ = ${safe};
-    ${guestPlayerSource()}
+${script}
   </script>
 </body>
 </html>`;
-}
-
-function guestPlayerSource(): string {
-  return `(function () {
-  var spec = window.__HAPP_SPEC__ || {};
-  var caps = spec.capabilities || [];
-  var pages = spec.pages && spec.pages.length ? spec.pages : [{ name: 'Accueil', type: 'home' }];
-  var appName = (spec.app && spec.app.name) || 'Mon application';
-  var current = 0;
-  var gameGen = 0;
-  var root = document.getElementById('root');
-  pages.some(function (page, index) {
-    if (page.type === 'game') { current = index; return true; }
-    return false;
-  });
-
-  function hue(name) {
-    var h = 0;
-    for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-    return h % 360;
-  }
-  document.documentElement.style.setProperty('--accent', 'hsl(' + hue(appName) + ' 48% 52%)');
-
-  function call(method, params) {
-    return new Promise(function (resolve, reject) {
-      var id = Math.random().toString(36).slice(2);
-      function onMsg(event) {
-        var data = event.data;
-        if (!data || data.type !== 'runtime-result' || data.id !== id) return;
-        window.removeEventListener('message', onMsg);
-        if (data.error) reject(new Error(data.error));
-        else resolve(data.result);
-      }
-      window.addEventListener('message', onMsg);
-      parent.postMessage({ type: 'runtime', id: id, method: method, params: params || {} }, '*');
-    });
-  }
-
-  window.runtime = {
-    capabilities: {
-      has: function (name) { return Promise.resolve(caps.indexOf(name) !== -1); }
-    },
-    storage: {
-      get: function (key) { return call('storage.get', { key: key }); },
-      set: function (key, value) { return call('storage.set', { key: key, value: value }); },
-      list: function () { return call('storage.list', {}); }
-    },
-    db: {
-      query: function (collection) { return call('db.query', { collection: collection || 'items' }); },
-      upsert: function (collection, record) {
-        return call('db.upsert', { collection: collection || 'items', record: record });
-      },
-      remove: function (collection, id) {
-        return call('db.remove', { collection: collection || 'items', id: id });
-      }
-    },
-    camera: { capture: function () { return call('camera.capture', {}); } },
-    files: { pick: function () { return call('files.pick', {}); } },
-    share: { send: function (text) { return call('share.send', { text: text }); } }
-  };
-
-  function el(tag, attrs, kids) {
-    var node = document.createElement(tag);
-    if (attrs) Object.keys(attrs).forEach(function (k) {
-      if (k === 'class') node.className = attrs[k];
-      else if (k === 'text') node.textContent = attrs[k];
-      else if (k.slice(0, 2) === 'on') node.addEventListener(k.slice(2).toLowerCase(), attrs[k]);
-      else node.setAttribute(k, attrs[k]);
-    });
-    (kids || []).forEach(function (child) { if (child) node.appendChild(child); });
-    return node;
-  }
-
-  function pointFrom(event) {
-    var t = (event.changedTouches && event.changedTouches[0])
-      || (event.touches && event.touches[0])
-      || event;
-    return { x: Number(t.clientX || 0), y: Number(t.clientY || 0) };
-  }
-
-  function bindTap(node, handler) {
-    var last = 0;
-    function wrap(event) {
-      if (event.cancelable) event.preventDefault();
-      var now = Date.now();
-      if (event.type === 'click' && now - last < 400) return;
-      if (event.type !== 'click') last = now;
-      handler(event);
-    }
-    node.addEventListener('pointerdown', wrap);
-    node.addEventListener('touchstart', wrap, { passive: false });
-    node.addEventListener('click', wrap);
-  }
-
-  function collectionName(page) {
-    var type = page.type || '';
-    if (type === 'crud') return (page.name || 'items').toLowerCase().replace(/\\s+/g, '-');
-    if (page.name === 'Scores') return 'scores';
-    return 'items';
-  }
-
-  async function render() {
-    gameGen += 1;
-    var page = pages[current] || pages[0];
-    root.textContent = '';
-    var hero = el('header', { class: 'hero' }, [
-      el('h1', { text: page.name }),
-      el('p', { text: emptyCopy(page) })
-    ]);
-    var main = el('main', {});
-    if (page.type === 'game' || page.name === 'Jouer') main.className = 'play';
-    var nav = el('nav', { class: 'tabs' });
-    if (pages.length > 1) {
-      pages.forEach(function (item, index) {
-        nav.appendChild(el('button', {
-          class: index === current ? 'on' : '',
-          text: item.name,
-          type: 'button',
-          onClick: function () { current = index; render(); }
-        }));
-      });
-    }
-    root.appendChild(hero);
-    root.appendChild(main);
-    if (pages.length > 1) root.appendChild(nav);
-
-    try {
-      if (!spec.pages || !spec.pages.length) return;
-      if (page.type === 'crud') await renderCrud(main, page);
-      else if (page.type === 'dashboard') await renderDash(main);
-      else if (page.name === 'Jouer' || page.type === 'game') await renderGame(main);
-      else if (page.name === 'Photos' || page.name === 'Photo') await renderPhotos(main);
-      else renderVitrine(main, page);
-    } catch (err) {
-      main.appendChild(el('p', { class: 'muted', text: String(err.message || err) }));
-    }
-  }
-
-  function emptyCopy(page) {
-    if (!spec.pages || !spec.pages.length) {
-      return 'Ton application est encore vide. Décris-la avec le bouton Uforge.';
-    }
-    if (page.type === 'crud') return 'Tes listes, à ajouter et modifier ici.';
-    if (page.type === 'dashboard') return 'Un aperçu de ce qui compte.';
-    if (page.type === 'game') return 'Touche le point pour marquer.';
-    return appName;
-  }
-
-  async function renderCrud(main, page) {
-    var col = collectionName(page);
-    var rows = [];
-    try { rows = await window.runtime.db.query(col); } catch (e) { rows = []; }
-    var input = el('input', { placeholder: 'Ajouter…' });
-    var add = el('button', {
-      class: 'act',
-      text: 'Ajouter',
-      onClick: async function () {
-        var title = input.value.trim();
-        if (!title) return;
-        await window.runtime.db.upsert(col, { title: title, at: Date.now() });
-        input.value = '';
-        render();
-      }
-    });
-    main.appendChild(el('div', { class: 'card' }, [input, add]));
-    if (!rows.length) {
-      main.appendChild(el('p', { class: 'muted', text: 'Rien pour l’instant.' }));
-      return;
-    }
-    rows.slice().reverse().forEach(function (row) {
-      var title = String(row.title || row.name || row.id);
-      main.appendChild(el('div', { class: 'card row' }, [
-        el('div', { class: 'grow', text: title }),
-        el('button', {
-          class: 'ghost',
-          text: 'Retirer',
-          onClick: async function () {
-            await window.runtime.db.remove(col, row.id);
-            render();
-          }
-        })
-      ]));
-    });
-  }
-
-  async function renderDash(main) {
-    var keys = Object.create(null);
-    pages.forEach(function (page) {
-      if (page.type === 'crud') keys[collectionName(page)] = page.name;
-    });
-    var names = Object.keys(keys);
-    if (!names.length) names = ['items'];
-    for (var i = 0; i < names.length; i++) {
-      var col = names[i];
-      var rows = [];
-      try { rows = await window.runtime.db.query(col); } catch (e) { rows = []; }
-      main.appendChild(el('div', { class: 'card' }, [
-        el('p', { class: 'muted', text: keys[col] || col }),
-        el('p', { class: 'score', text: String(rows.length) })
-      ]));
-    }
-  }
-
-  async function renderGame(main) {
-    var token = gameGen;
-    var best = 0;
-    try {
-      var scores = await window.runtime.db.query('scores');
-      scores.forEach(function (row) {
-        var n = Number(row.score || 0);
-        if (n > best) best = n;
-      });
-    } catch (e) {}
-    var score = 0;
-    var label = el('p', { class: 'score', text: '0' });
-    var hint = el('p', { class: 'muted', text: 'Touche le point. Meilleur : ' + best });
-    var canvas = el('canvas', {});
-    var ctx = canvas.getContext('2d');
-    var target = { x: 0.5, y: 0.5, vx: 0.004, vy: -0.003 };
-    function size() {
-      var w = Math.max(canvas.clientWidth, 240);
-      var h = Math.max(canvas.clientHeight, 160);
-      canvas.width = Math.floor(w * 2);
-      canvas.height = Math.floor(h * 2);
-    }
-    function scramble() {
-      target.x = 0.18 + Math.random() * 0.64;
-      target.y = 0.18 + Math.random() * 0.64;
-      var speed = 0.003 + Math.random() * 0.006;
-      var angle = Math.random() * Math.PI * 2;
-      target.vx = Math.cos(angle) * speed;
-      target.vy = Math.sin(angle) * speed;
-    }
-    function paint() {
-      if (!ctx) return;
-      var w = canvas.width;
-      var h = canvas.height;
-      ctx.fillStyle = '#1c1814';
-      ctx.fillRect(0, 0, w, h);
-      var px = target.x * w;
-      var py = target.y * h;
-      var r = Math.max(28, w * 0.045);
-      ctx.beginPath();
-      ctx.arc(px, py, r, 0, Math.PI * 2);
-      ctx.fillStyle = 'hsl(' + hue(appName) + ' 62% 58%)';
-      ctx.fill();
-    }
-    function step() {
-      if (token !== gameGen) return;
-      target.x += target.vx;
-      target.y += target.vy;
-      if (target.x < 0.12 || target.x > 0.88) target.vx *= -1;
-      if (target.y < 0.12 || target.y > 0.88) target.vy *= -1;
-      target.x = Math.min(0.88, Math.max(0.12, target.x));
-      target.y = Math.min(0.88, Math.max(0.12, target.y));
-      paint();
-      requestAnimationFrame(step);
-    }
-    async function onTap(event) {
-      var p = pointFrom(event);
-      var rect = canvas.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
-      var x = (p.x - rect.left) / rect.width;
-      var y = (p.y - rect.top) / rect.height;
-      var dx = x - target.x;
-      var dy = y - target.y;
-      if (dx * dx + dy * dy > 0.16) return;
-      score += 1;
-      label.textContent = String(score);
-      scramble();
-      paint();
-      if (score > best) {
-        best = score;
-        hint.textContent = 'Touche le point. Meilleur : ' + best;
-        try {
-          await window.runtime.db.upsert('scores', { id: 'best', score: best });
-        } catch (e) {}
-      }
-    }
-    canvas.setAttribute('role', 'button');
-    bindTap(canvas, onTap);
-    main.appendChild(label);
-    main.appendChild(hint);
-    main.appendChild(canvas);
-    function fit() {
-      if (token !== gameGen) return;
-      size();
-      paint();
-    }
-    window.addEventListener('resize', fit);
-    requestAnimationFrame(function () {
-      scramble();
-      fit();
-      requestAnimationFrame(step);
-    });
-  }
-
-  async function renderPhotos(main) {
-    var shot = el('div', {});
-    var btn = el('button', {
-      class: 'act',
-      text: 'Prendre une photo',
-      onClick: async function () {
-        var res = await window.runtime.camera.capture();
-        shot.textContent = '';
-        if (res && res.dataUrl) {
-          var img = el('img', { class: 'shot' });
-          img.src = res.dataUrl;
-          shot.appendChild(img);
-        }
-      }
-    });
-    main.appendChild(el('div', { class: 'card' }, [btn, shot]));
-  }
-
-  function renderVitrine(main, page) {
-    var gameIndex = -1;
-    pages.forEach(function (item, index) {
-      if (item.type === 'game' && gameIndex < 0) gameIndex = index;
-    });
-    var kids = [
-      el('p', { text: page.name }),
-      el('p', { class: 'muted', text: 'L’écran ' + page.name + ' de ' + appName + '.' })
-    ];
-    if (gameIndex >= 0) {
-      kids.push(el('button', {
-        class: 'act',
-        text: 'Jouer',
-        onClick: function () { current = gameIndex; render(); }
-      }));
-    }
-    main.appendChild(el('div', { class: 'card' }, kids));
-  }
-
-  render();
-})();`;
 }

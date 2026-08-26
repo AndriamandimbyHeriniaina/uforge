@@ -4,8 +4,10 @@ import type {
   LlmProvider,
   ProviderGenerateInput,
   ProviderGenerateResult,
+  StreamTokenFn,
 } from './provider.types';
 import { sanitizeSpec } from './spec.util';
+import { emitReplySlowly } from './stream.util';
 
 /**
  * Offline fallback when no provider API key is configured.
@@ -21,14 +23,23 @@ export class StubAdapter implements LlmProvider {
     return true;
   }
 
-  async generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult> {
+  generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult> {
+    return this.generateStream(input, () => undefined);
+  }
+
+  async generateStream(
+    input: ProviderGenerateInput,
+    onToken: StreamTokenFn,
+    signal?: AbortSignal,
+  ): Promise<ProviderGenerateResult> {
     const { spec, reply } = this.conversationalStub(input.currentSpec, input.prompt);
+    await emitReplySlowly(reply, onToken, signal);
     return {
       spec,
       reply,
       inputTokens: Math.ceil((input.skillsBlock.length + input.prompt.length) / 4),
       outputTokens: Math.ceil(JSON.stringify(spec).length / 4),
-      provider: 'stub',
+      provider: this.id,
       model: 'hforge-stub-v0',
     };
   }
@@ -60,6 +71,11 @@ export class StubAdapter implements LlmProvider {
           ...new Set([...previousCaps, ...this.guessCapabilities(prompt)]),
         ],
         pages: previousPages,
+        seed:
+          existing.seed ??
+          (prompt.toLowerCase().includes('stock')
+            ? { produits: [{ title: 'Cahier', qty: 4 }] }
+            : undefined),
       },
       existing,
       prompt,
@@ -82,33 +98,79 @@ export class StubAdapter implements LlmProvider {
     return 'Mon application';
   }
 
-  private pagesFromPrompt(prompt: string): Array<{ name: string; type: string }> {
+  private pagesFromPrompt(prompt: string): AppSpec['pages'] {
     const lower = prompt.toLowerCase();
     if (lower.includes('jeu')) {
       return [
-        { name: 'Jouer', type: 'game' },
+        {
+          name: 'Jouer',
+          type: 'game',
+          description: 'Touche le point qui bouge.',
+          game: {
+            kind: 'script',
+            goal: 'Un petit jeu généré',
+            source:
+              "resize();var s=0,x=canvas.width/2,y=canvas.height/2,vx=4,vy=3;function loop(){if(!ctx)return;x+=vx;y+=vy;if(x<20||x>canvas.width-20)vx*=-1;if(y<20||y>canvas.height-20)vy*=-1;ctx.fillStyle='#1c1814';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.beginPath();ctx.arc(x,y,20,0,Math.PI*2);ctx.fillStyle='#d4894a';ctx.fill();ctx.fillStyle='#fff';ctx.font='32px sans-serif';ctx.fillText(String(s),24,48);requestAnimationFrame(loop);}canvas.addEventListener('pointerdown',function(){s+=1;});loop();",
+          },
+        },
         { name: 'Scores', type: 'dashboard' },
       ];
     }
     if (lower.includes('stock')) {
       return [
-        { name: 'Accueil', type: 'dashboard' },
-        { name: 'Produits', type: 'crud' },
+        {
+          name: 'Accueil',
+          type: 'dashboard',
+          description: 'Combien de produits tu as.',
+        },
+        {
+          name: 'Produits',
+          type: 'crud',
+          collection: 'produits',
+          fields: [
+            { key: 'title', label: 'Produit', kind: 'text' },
+            { key: 'qty', label: 'Quantité', kind: 'number' },
+          ],
+        },
       ];
     }
-    return [{ name: 'Accueil', type: 'custom' }];
+    return [
+      {
+        name: 'Accueil',
+        type: 'custom',
+        description: 'Ton application commence ici.',
+      },
+    ];
   }
 
-  private extraPageFromPrompt(prompt: string): { name: string; type: string } | null {
+  private extraPageFromPrompt(prompt: string): NonNullable<AppSpec['pages']>[number] | null {
     const lower = prompt.toLowerCase();
     if (lower.includes('photo') || lower.includes('caméra') || lower.includes('camera')) {
-      return { name: 'Photos', type: 'custom' };
+      return {
+        name: 'Photos',
+        type: 'custom',
+        description: 'Des photos prises avec le téléphone.',
+        actions: [{ label: 'Prendre une photo', run: 'camera' }],
+      };
     }
     if (lower.includes('client')) {
-      return { name: 'Clients', type: 'crud' };
+      return {
+        name: 'Clients',
+        type: 'crud',
+        collection: 'clients',
+        fields: [
+          { key: 'title', label: 'Nom', kind: 'text' },
+          { key: 'note', label: 'Note', kind: 'note' },
+        ],
+      };
     }
     if (lower.includes('rdv') || lower.includes('rendez')) {
-      return { name: 'Agenda', type: 'custom' };
+      return {
+        name: 'Agenda',
+        type: 'custom',
+        description: 'Tes prochains rendez-vous.',
+        items: ['Ajoute tes créneaux ici en me le disant.'],
+      };
     }
     return null;
   }

@@ -1,7 +1,7 @@
 # Techno — Vite
 
-Bundler du web Runtime/Builder et, plus tard, du compiler pour les apps utilisatrices.
+Bundler du Runtime/Builder (`services/web`).
 
-Externals du `.happ` : `vue`, `runtime`. Sortie IIFE ou ESM selon le loader Runtime.
+Externals du `.happ` : `runtime.*` (pont host). Le CSS guest reste une enveloppe Runtime (`wrapGuestDocument`).
 
-Service `compiler` : enveloppe Vite (headless) quand le vrai build sera branché. Il renvoie l’artefact au Runtime ; **aucun stockage** gateway/MinIO.
+Service `compiler` : esbuild headless (`POST /v1/compile`). Il minify spec + player et **renvoie** `{ bundleJs, seedSql, manifest }` ; **aucun stockage** gateway/MinIO.

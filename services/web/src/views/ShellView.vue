@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import FloatButton from '../components/FloatButton.vue';
 import GeneratedApp from '../components/GeneratedApp.vue';
 import UforgePanel from '../components/UforgePanel.vue';
-import type { AppSpec } from '../runtime/types';
+import type { AppSpec, HappManifest } from '../runtime/types';
 import {
   clearToken,
   currentApp,
@@ -35,6 +35,19 @@ const spec = computed<AppSpec | null>(() => {
     return null;
   }
   return raw as AppSpec;
+});
+
+const guestBundleJs = computed(() =>
+  hasAccount.value ? undefined : decryptedHapp.value?.bundleJs,
+);
+const guestSeedSql = computed(() =>
+  hasAccount.value ? undefined : decryptedHapp.value?.seedSql,
+);
+const guestManifest = computed<HappManifest | null>(() => {
+  if (hasAccount.value) {
+    return null;
+  }
+  return decryptedHapp.value?.manifest ?? null;
 });
 
 const previewName = computed(() => {
@@ -140,6 +153,9 @@ onMounted(() => {
         :app-name="previewName"
         :app-id="app?.id"
         :compact="panelOpen && panelKind === 'workshop'"
+        :bundle-js="guestBundleJs"
+        :seed-sql="guestSeedSql"
+        :manifest="guestManifest"
       />
     </div>
     <FloatButton
@@ -167,10 +183,15 @@ onMounted(() => {
 .shell {
   min-height: 100vh;
   min-height: 100dvh;
+  touch-action: auto;
 }
 .preview {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   min-height: 100dvh;
+  touch-action: auto;
+  pointer-events: auto;
 }
 .shell.split {
   display: flex;
@@ -185,11 +206,13 @@ onMounted(() => {
   height: auto;
   display: flex;
   flex-direction: column;
+  z-index: 1;
 }
 .shell.split .preview :deep(.stage) {
   flex: 1;
   min-height: 0;
   height: auto;
+  position: relative;
 }
 .shell.split .toast {
   top: 0.8rem;

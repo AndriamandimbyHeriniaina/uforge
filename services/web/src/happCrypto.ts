@@ -14,6 +14,17 @@ export type LocalHapp = {
   name: string;
   spec: unknown;
   appId?: string;
+  /** Minified guest JS from the compiler. Overlay is never stored here. */
+  bundleJs?: string;
+  /** SQLite seed applied only when the overlay file is empty. */
+  seedSql?: string;
+  manifest?: {
+    id: string;
+    version: string;
+    name?: string;
+    runtime?: { min_version?: string };
+    capabilities?: string[];
+  };
 };
 
 export type HappEnvelope = {
@@ -127,6 +138,9 @@ export async function encryptHapp(
       name: happ.name,
       spec: happ.spec,
       appId: happ.appId,
+      bundleJs: happ.bundleJs,
+      seedSql: happ.seedSql,
+      manifest: happ.manifest,
     }),
   );
   const encrypted = await crypto.subtle.encrypt(
@@ -169,12 +183,18 @@ export async function decryptHapp(
       name?: string;
       spec?: unknown;
       appId?: string;
+      bundleJs?: string;
+      seedSql?: string;
+      manifest?: LocalHapp['manifest'];
     };
     return {
       email,
       name: payload.name ?? 'Mon application',
       spec: payload.spec ?? null,
       appId: payload.appId,
+      bundleJs: payload.bundleJs,
+      seedSql: payload.seedSql,
+      manifest: payload.manifest,
     };
   } catch {
     throw new Error('Mot de passe incorrect');

@@ -1,3 +1,5 @@
+import type { AppSpec } from './types';
+
 const PREFIX = 'uforge-overlay:';
 
 export type OverlayState = {
@@ -42,6 +44,42 @@ export function loadOverlay(appId: string): OverlayState {
  */
 export function saveOverlay(appId: string, overlay: OverlayState): void {
   localStorage.setItem(PREFIX + appId, JSON.stringify(overlay));
+}
+
+/**
+ * Copies spec.seed into empty overlay collections. Never overwrites live rows.
+ *
+ * @example
+ * applySeed('app-id', spec);
+ */
+export function applySeed(appId: string, spec: AppSpec): OverlayState {
+  const overlay = loadOverlay(appId);
+  const seed = spec.seed;
+  if (!seed) {
+    return overlay;
+  }
+  let changed = false;
+  for (const [key, rows] of Object.entries(seed)) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      continue;
+    }
+    if ((overlay.collections[key] ?? []).length > 0) {
+      continue;
+    }
+    overlay.collections[key] = rows.map((row, index) => {
+      if (row && typeof row === 'object') {
+        const rec = { ...(row as Record<string, unknown>) };
+        rec.id = String(rec.id ?? `seed-${index + 1}`);
+        return rec;
+      }
+      return { id: `seed-${index + 1}`, title: String(row) };
+    });
+    changed = true;
+  }
+  if (changed) {
+    saveOverlay(appId, overlay);
+  }
+  return overlay;
 }
 
 /**

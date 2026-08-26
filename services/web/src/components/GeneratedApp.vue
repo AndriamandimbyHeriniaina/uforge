@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { buildGuestDocument } from '../runtime/buildGuestDocument';
+import {
+  buildGuestDocument,
+  wrapGuestDocument,
+} from '../runtime/buildGuestDocument';
 import { handleRuntimeCall } from '../runtime/hostBridge';
-import type { AppSpec, RuntimeRequest } from '../runtime/types';
+import { nativeCaptureImage, nativeShare } from '../runtime/native';
+import type { AppSpec, HappManifest, RuntimeRequest } from '../runtime/types';
 
 const props = defineProps<{
   spec: AppSpec | null;
@@ -10,6 +14,10 @@ const props = defineProps<{
   appId?: string;
   /** True when the Builder sheet shares the screen (no overlap with the guest). */
   compact?: boolean;
+  /** Compiler output; preview without compile uses the live spec instead. */
+  bundleJs?: string;
+  seedSql?: string;
+  manifest?: HappManifest | null;
 }>();
 
 const frame = ref<HTMLIFrameElement | null>(null);
@@ -19,12 +27,18 @@ const fileInput = ref<HTMLInputElement | null>(null);
 let imageWaiter: ((value: string | null) => void) | null = null;
 let fileWaiter: ((value: { name: string; dataUrl: string } | null) => void) | null = null;
 
-const appId = computed(() => props.appId || 'preview');
+const appId = computed(() => props.appId || props.manifest?.id || 'preview');
 
-const srcdoc = computed(() => buildGuestDocument(props.spec));
-const frameKey = computed(() => JSON.stringify(props.spec ?? null));
+const srcdoc = computed(() =>
+  props.bundleJs
+    ? wrapGuestDocument(props.bundleJs)
+    : buildGuestDocument(props.spec),
+);
+const frameKey = computed(
+  () => props.bundleJs || JSON.stringify(props.spec ?? null),
+);
 
-function pickImage(): Promise<string | null> {
+function pickImageWeb(): Promise<string | null> {
   return new Promise((resolve) => {
     imageWaiter = resolve;
     cameraInput.value?.click();
@@ -41,6 +55,20 @@ function pickImage(): Promise<string | null> {
       { once: true },
     );
   });
+}
+
+/**
+ * Prefers the Capacitor camera on device; falls back to a hidden file input.
+ *
+ * @example
+ * const dataUrl = await pickImage();
+ */
+async function pickImage(): Promise<string | null> {
+  const native = await nativeCaptureImage();
+  if (native !== undefined) {
+    return native;
+  }
+  return pickImageWeb();
 }
 
 function pickFile(): Promise<{ name: string; dataUrl: string } | null> {
@@ -63,6 +91,9 @@ function pickFile(): Promise<{ name: string; dataUrl: string } | null> {
 }
 
 async function share(text: string): Promise<void> {
+  if (await nativeShare(text)) {
+    return;
+  }
   try {
     if (navigator.share) {
       await navigator.share({ text });
@@ -144,6 +175,7 @@ async function onMessage(event: MessageEvent): Promise<void> {
       data.method,
       data.params ?? {},
       { pickImage, pickFile, share },
+      { seedSql: props.seedSql, manifest: props.manifest },
     );
   } catch (err) {
     reply.error = err instanceof Error ? err.message : 'runtime error';
@@ -166,6 +198,20 @@ watch(srcdoc, () => {
   imageWaiter = null;
   fileWaiter = null;
 });
+
+/**
+ * iOS / some WebViews eat the first tap to focus the iframe.
+ *
+ * @example
+ * focusGuest();
+ */
+function focusGuest(): void {
+  try {
+    frame.value?.focus({ preventScroll: true });
+  } catch {
+    frame.value?.focus();
+  }
+}
 </script>
 
 <template>
@@ -175,8 +221,11 @@ watch(srcdoc, () => {
       ref="frame"
       class="guest"
       sandbox="allow-scripts"
+      tabindex="-1"
       :srcdoc="srcdoc"
       :title="appName"
+      @pointerdown="focusGuest"
+      @touchstart.passive="focusGuest"
     />
     <input
       ref="cameraInput"
@@ -197,26 +246,29 @@ watch(srcdoc, () => {
 
 <style scoped>
 .stage {
-  min-height: 100vh;
-  min-height: 100dvh;
+  position: relative;
+  isolation: isolate;
+  height: 100vh;
+  height: 100dvh;
   background: #f4efe8;
+  touch-action: auto;
+  pointer-events: auto;
 }
 .stage.compact {
   min-height: 0;
   height: 100%;
 }
 .guest {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
-  height: 100vh;
-  height: 100dvh;
+  height: 100%;
   border: 0;
   background: #f4efe8;
   pointer-events: auto;
   touch-action: auto;
-}
-.stage.compact .guest {
-  height: 100%;
+  z-index: 1;
 }
 .hidden-input {
   display: none;

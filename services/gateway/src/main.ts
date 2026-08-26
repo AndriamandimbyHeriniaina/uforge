@@ -6,7 +6,7 @@ import { AppModule } from './app.module';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
   app.enableCors({
-    origin: process.env.WEB_ORIGIN ?? 'http://localhost:5173',
+    origin: corsOrigins(),
     credentials: true,
   });
   app.useGlobalPipes(
@@ -21,3 +21,25 @@ async function bootstrap(): Promise<void> {
 }
 
 void bootstrap();
+
+/**
+ * Browser PWA plus Capacitor WebView origins.
+ *
+ * @example
+ * corsOrigins(); // ['http://localhost:5173', 'https://localhost', ...]
+ */
+function corsOrigins(): string[] {
+  const extra = (process.env.WEB_ORIGIN ?? 'http://localhost:5173')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return [
+    ...new Set([
+      ...extra,
+      'http://localhost:5173',
+      'https://localhost',
+      'capacitor://localhost',
+      'http://localhost',
+    ]),
+  ];
+}

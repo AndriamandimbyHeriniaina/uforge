@@ -25,7 +25,7 @@ Backend propriétaire. Le Runtime et le Builder ne parlent **jamais** à OpenAI,
 | `POST` | `/v1/apps/current/compile` | Accusé de compile (pas de binaire `.happ`) |
 | `POST` | `/v1/apps/current/reset` | Vide le draft Builder (compte intact) |
 | `POST` | `/v1/apps` | Créer une app (draft vide) |
-| `POST` | `/v1/ai/generate` | Génération cadrée par les skills |
+| `POST` | `/v1/ai/generate` | Génération cadrée par les skills (**SSE** : `token` puis `done`) |
 | `GET` | `/v1/skills` | Liste des skills déposées (admin) |
 | `POST` | `/v1/files` | Upload contexte Builder → MinIO |
 | `GET` | `/health` | Liveness |
@@ -34,7 +34,11 @@ Backend propriétaire. Le Runtime et le Builder ne parlent **jamais** à OpenAI,
 
 Entrée : `prompt`, `appId?`, `draftId?`, `fileIds[]`.
 
-Sortie : `requestId`, `status`, `skillsApplied[]`, `spec` (JSON), `refusal?`.
+Sortie : flux SSE `text/event-stream` — événements `meta`, `token` (texte utilisateur), `done` (`requestId`, `status`, `spec`, `reply`). Erreurs quota/auth restent du JSON HTTP avant le flux.
+
+Le premier champ JSON du modèle doit être `reply`, pour que la bulle s’affiche pendant que la spec arrive.
+
+La spec peut porter `pages[].fields`, `actions`, `items`, `game.source` (JS canvas jouable), et `seed`. Le gateway les normalise ; le Runtime les rend. Un type `game`/`canvas` n’est plus recalé sur le jouet « tape le point », sauf si `kind` vaut explicitement `catch` ou `tap`.
 
 Les clés providers restent dans les variables d’environnement du service `gateway`. Jamais dans le `.happ` ni le frontend.
 

@@ -1,6 +1,4 @@
 import {
-  BadGatewayException,
-  ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -15,7 +13,29 @@ import { SkillsService } from '../skills/skills.service';
 import { GenerateDto } from '../apps/apps.dto';
 import { effectiveDailyGenerations } from '../quota.util';
 import { ProviderRouter } from './providers/provider.router';
-import type { AppSpec } from './providers/provider.types';
+import type { AppSpec, StreamTokenFn } from './providers/provider.types';
+
+export type GenerateClientResult = {
+  requestId: string;
+  status: 'SUCCEEDED' | 'REFUSED' | 'FAILED';
+  skillsApplied: string[];
+  spec?: AppSpec;
+  reply?: string;
+  provider?: string;
+  refusal?: string;
+  message?: string;
+};
+
+type TurnContext = {
+  userId: string;
+  dto: GenerateDto;
+  started: number;
+  requestId: string;
+  skillsApplied: string[];
+  skillsBlock: string;
+  generationId: string;
+  currentSpec: AppSpec;
+};
 
 @Injectable()
 export class AiService {
@@ -28,15 +48,12 @@ export class AiService {
   ) {}
 
   /**
-   * Runs one Builder generation: reload skills, enforce quota, call the LLM adapter.
+   * Starts a turn (quota, skills, generation row). Safe to call before SSE headers.
    *
    * @example
-   * const result = await aiService.generate(userId, {
-   *   prompt: 'I want a stock app with a barcode camera',
-   *   appId,
-   * });
+   * const ctx = await aiService.beginGenerate(userId, dto);
    */
-  async generate(userId: string, dto: GenerateDto) {
+  async beginGenerate(userId: string, dto: GenerateDto): Promise<TurnContext> {
     const started = Date.now();
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
@@ -85,24 +102,6 @@ export class AiService {
       },
     });
 
-    const refusal = this.detectHardRefusal(dto.prompt);
-    if (refusal) {
-      await this.prisma.generation.update({
-        where: { id: generation.id },
-        data: {
-          status: 'REFUSED',
-          refusalReason: refusal,
-          durationMs: Date.now() - started,
-        },
-      });
-      throw new ForbiddenException({
-        requestId,
-        status: 'REFUSED',
-        refusal,
-        skillsApplied: loaded.names,
-      });
-    }
-
     const existingDraft = dto.appId
       ? await this.prisma.draft.findFirst({
           where: dto.draftId
@@ -116,54 +115,103 @@ export class AiService {
         ? (existingDraft.specJson as AppSpec)
         : {};
 
+    return {
+      userId,
+      dto,
+      started,
+      requestId,
+      skillsApplied: loaded.names,
+      skillsBlock: loaded.block,
+      generationId: generation.id,
+      currentSpec,
+    };
+  }
+
+  /**
+   * Streams the French reply then persists the spec.
+   *
+   * @example
+   * const out = await aiService.streamGenerate(ctx, (delta) => write(delta), signal);
+   */
+  async streamGenerate(
+    ctx: TurnContext,
+    onToken: StreamTokenFn,
+    signal?: AbortSignal,
+  ): Promise<GenerateClientResult> {
+    const hard = this.detectHardRefusal(ctx.dto.prompt);
+    if (hard) {
+      await this.prisma.generation.update({
+        where: { id: ctx.generationId },
+        data: {
+          status: 'REFUSED',
+          refusalReason: hard,
+          durationMs: Date.now() - ctx.started,
+        },
+      });
+      onToken(hard);
+      return {
+        requestId: ctx.requestId,
+        status: 'REFUSED',
+        skillsApplied: ctx.skillsApplied,
+        reply: hard,
+        refusal: hard,
+      };
+    }
+
     let result;
     try {
-      result = await this.providers.generate({
-        skillsBlock: loaded.block,
-        prompt: dto.prompt,
-        currentSpec,
-      });
+      result = await this.providers.generateStream(
+        {
+          skillsBlock: ctx.skillsBlock,
+          prompt: ctx.dto.prompt,
+          currentSpec: ctx.currentSpec,
+        },
+        onToken,
+        signal,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : 'provider error';
       await this.prisma.generation.update({
-        where: { id: generation.id },
+        where: { id: ctx.generationId },
         data: {
           status: 'FAILED',
           refusalReason: message,
-          durationMs: Date.now() - started,
+          durationMs: Date.now() - ctx.started,
         },
       });
-      throw new BadGatewayException({
-        requestId,
+      return {
+        requestId: ctx.requestId,
         status: 'FAILED',
+        skillsApplied: ctx.skillsApplied,
         message,
-        skillsApplied: loaded.names,
-      });
+      };
     }
 
     if (result.refusal) {
       await this.prisma.generation.update({
-        where: { id: generation.id },
+        where: { id: ctx.generationId },
         data: {
           status: 'REFUSED',
           refusalReason: result.refusal,
           provider: result.provider,
           model: result.model,
-          durationMs: Date.now() - started,
+          durationMs: Date.now() - ctx.started,
         },
       });
-      throw new ForbiddenException({
-        requestId,
+      return {
+        requestId: ctx.requestId,
         status: 'REFUSED',
+        skillsApplied: ctx.skillsApplied,
+        reply: result.refusal,
         refusal: result.refusal,
-        skillsApplied: loaded.names,
-      });
+        provider: result.provider,
+      };
     }
 
     const spec = result.spec;
     await this.prisma.$transaction([
       this.prisma.generation.update({
-        where: { id: generation.id },
+        where: { id: ctx.generationId },
         data: {
           status: 'SUCCEEDED',
           resultSpec: spec as Prisma.InputJsonValue,
@@ -171,22 +219,22 @@ export class AiService {
           outputTokens: result.outputTokens,
           provider: result.provider,
           model: result.model,
-          durationMs: Date.now() - started,
+          durationMs: Date.now() - ctx.started,
         },
       }),
       this.prisma.usageRecord.create({
         data: {
-          userId,
-          generationId: generation.id,
+          userId: ctx.userId,
+          generationId: ctx.generationId,
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
           estimatedCostUsd: 0,
         },
       }),
-      ...(dto.appId
+      ...(ctx.dto.appId
         ? [
             this.prisma.app.update({
-              where: { id: dto.appId },
+              where: { id: ctx.dto.appId },
               data: {
                 status: 'DRAFT',
                 ...(spec.app?.name ? { name: spec.app.name } : {}),
@@ -196,13 +244,13 @@ export class AiService {
         : []),
     ]);
 
-    if (dto.appId) {
-      const draft = dto.draftId
+    if (ctx.dto.appId) {
+      const draft = ctx.dto.draftId
         ? await this.prisma.draft.findFirst({
-            where: { id: dto.draftId, appId: dto.appId },
+            where: { id: ctx.dto.draftId, appId: ctx.dto.appId },
           })
         : await this.prisma.draft.findFirst({
-            where: { appId: dto.appId },
+            where: { appId: ctx.dto.appId },
             orderBy: { revision: 'desc' },
           });
       if (draft) {
@@ -214,9 +262,9 @@ export class AiService {
     }
 
     return {
-      requestId,
+      requestId: ctx.requestId,
       status: 'SUCCEEDED',
-      skillsApplied: loaded.names,
+      skillsApplied: ctx.skillsApplied,
       spec,
       reply: result.reply,
       provider: result.provider,

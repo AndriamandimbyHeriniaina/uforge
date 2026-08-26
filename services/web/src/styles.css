@@ -22,6 +22,8 @@ html,
 body,
 #app {
   min-height: 100%;
+  height: 100%;
+  overscroll-behavior: none;
 }
 
 body {
@@ -31,7 +33,8 @@ body {
   font-family: var(--font);
   font-size: 16px;
   line-height: 1.45;
-  touch-action: manipulation;
+  /* manipulation on body steals taps before they reach a srcdoc iframe */
+  touch-action: auto;
 }
 
 button,

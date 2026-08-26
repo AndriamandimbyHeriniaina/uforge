@@ -1,41 +1,79 @@
 import http from 'node:http';
+import { packGuest } from './pack.mjs';
 
 const port = Number(process.env.COMPILER_PORT ?? 3001);
+const allowedOrigins = new Set(
+  (process.env.WEB_ORIGIN ?? 'http://localhost:5173')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .concat([
+      'http://localhost:5173',
+      'https://localhost',
+      'capacitor://localhost',
+      'http://localhost',
+    ]),
+);
 
 /**
- * Stub compile endpoint. A real implementation will run Vite with Runtime
- * externals and return a signed .happ to the Runtime. The compiler must not
- * persist the artefact; the gateway must never store a .happ.
+ * Compile endpoint. Returns a minified guest bundle + seed SQL + manifest.
+ * The compiler must not persist the artefact; the gateway must never store a .happ.
  *
  * @example
  * fetch('http://localhost:3001/v1/compile', {
  *   method: 'POST',
  *   headers: { 'content-type': 'application/json' },
- *   body: JSON.stringify({ appId: '…', draftId: '…' }),
+ *   body: JSON.stringify({ spec, playerSource, appId, appName }),
  * });
  */
 const server = http.createServer(async (req, res) => {
   const url = req.url ?? '/';
+  cors(req, res);
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   if (req.method === 'GET' && url === '/health') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'compiler' }));
+    json(res, 200, { status: 'ok', service: 'compiler' });
     return;
   }
   if (req.method === 'POST' && url === '/v1/compile') {
-    const body = await readBody(req);
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        status: 'stub',
-        message: 'Compiler stub: artefact packaging is not implemented yet.',
-        request: body,
-      }),
-    );
+    try {
+      const body = await readBody(req);
+      const packed = await packGuest({
+        spec: body.spec,
+        playerSource: body.playerSource,
+        appId: body.appId,
+        appName: body.appName,
+      });
+      json(res, 200, packed);
+    } catch (err) {
+      json(res, 500, {
+        status: 'error',
+        message: err instanceof Error ? err.message : 'compile failed',
+      });
+    }
     return;
   }
   res.writeHead(404);
   res.end();
 });
+
+function cors(req, res) {
+  const requestOrigin = req.headers.origin;
+  const allow = allowedOrigins.has(requestOrigin)
+    ? requestOrigin
+    : 'http://localhost:5173';
+  res.setHeader('Access-Control-Allow-Origin', allow);
+  res.setHeader('Access-Control-Allow-Headers', 'content-type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+}
+
+function json(res, status, body) {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
 
 function readBody(req) {
   return new Promise((resolve) => {

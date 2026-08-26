@@ -3,7 +3,7 @@ import { nextTick, onMounted, ref, watch } from 'vue';
 import {
   compileOnDevice,
   currentApp,
-  generate,
+  generateStream,
   getSessionPassword,
   login,
   loadHappEnvelope,
@@ -58,7 +58,11 @@ function loadThread(): void {
 
 watch(
   () => props.app,
-  () => loadThread(),
+  () => {
+    if (!busy.value) {
+      loadThread();
+    }
+  },
   { immediate: true },
 );
 
@@ -110,6 +114,7 @@ async function send(text = prompt.value): Promise<void> {
   confirmWipe.value = false;
   prompt.value = '';
   thread.value.push({ role: 'user', text: value });
+  thread.value.push({ role: 'assistant', text: '' });
   busy.value = true;
   error.value = '';
   try {
@@ -117,7 +122,13 @@ async function send(text = prompt.value): Promise<void> {
       props.app?.id && props.app.id !== 'local'
         ? props.app
         : await currentApp();
-    await generate(value, target.id);
+    const last = thread.value.length - 1;
+    await generateStream(value, target.id, (delta) => {
+      const bubble = thread.value[last];
+      if (bubble?.role === 'assistant') {
+        thread.value[last] = { ...bubble, text: bubble.text + delta };
+      }
+    });
     emit('refresh');
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Réessaie dans un instant';
@@ -135,7 +146,7 @@ async function wipeApp(): Promise<void> {
   error.value = '';
   try {
     await resetCurrentApp();
-    wipeInstalledApp();
+    await wipeInstalledApp();
     thread.value = [];
     confirmWipe.value = false;
     emit('wiped');
@@ -294,7 +305,6 @@ onMounted(() => {
           <div v-for="(msg, i) in thread" :key="i" :class="['bubble', msg.role]">
             {{ msg.text }}
           </div>
-          <p v-if="busy" class="muted">…</p>
         </div>
         <p v-if="error" class="error pad">{{ error }}</p>
         <form class="composer" @submit.prevent="send()">
@@ -363,17 +373,19 @@ onMounted(() => {
   padding: 1.5rem;
 }
 .overlay.peek {
-  position: relative;
-  inset: unset;
-  z-index: 2;
+  position: static;
+  inset: auto;
+  z-index: auto;
   display: block;
   width: 100%;
   height: auto;
   flex: 0 0 auto;
   padding: 0;
-  pointer-events: auto;
+  /* wrapper must not sit on the preview; only the sheet captures taps */
+  pointer-events: none;
 }
 .overlay.peek .sheet {
+  pointer-events: auto;
   width: 100%;
   max-width: none;
   max-height: min(46vh, 420px);

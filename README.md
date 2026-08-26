@@ -17,13 +17,26 @@ docker compose up --build
 | --- | --- |
 | Builder web | http://localhost:5173 |
 | Gateway API | http://localhost:3000/health |
-| Compiler stub | http://localhost:3001/health |
+| Compiler | http://localhost:3001/health |
 | MinIO console | http://localhost:9001 |
 | Postgres (debug) | localhost:5433 |
 
 Compte admin bootstrap : email `BOOTSTRAP_ADMIN_EMAIL` (défaut `admin@hforge.local`), mot de passe au moins 8 caractères à l’inscription.
 
 IA : dans `.env`, `AI_PROVIDER=openai` (ou `anthropic`) et la clé. Sans clé, `stub`.
+
+## Android (Capacitor)
+
+Le Runtime natif n’est pas un conteneur. Après `docker compose up` pour le gateway :
+
+```bash
+cd services/web
+npm install
+npm run cap:sync
+npx cap open android
+```
+
+Détail : [`doc/techno/capacitor.md`](doc/techno/capacitor.md).
 
 ## Skills prompt (cadrage utilisateurs)
 
