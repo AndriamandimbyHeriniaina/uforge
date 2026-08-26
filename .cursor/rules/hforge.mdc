@@ -1,0 +1,18 @@
+---
+description: Uforge (You Forge) architecture and documentation-as-skills. Apply when working anywhere in this repository.
+alwaysApply: true
+---
+
+# Uforge
+
+Read `doc/architecture.md` before changing structure, services, or data flow.
+
+- Features: `doc/features/<name>.md`
+- Technos: `doc/techno/<name>.md`
+- Gateway prompt skills (end users, not this agent): `skills/prompt/`
+
+JSDoc and code comments in English with an `@example`. Product `doc/` is in French.
+
+Do not call AI providers from `services/web`. All generation goes through `services/gateway`.
+
+Stack: Docker Compose, NestJS gateway, Prisma/Postgres, Redis, MinIO, Vue 3 + Vite, Capacitor later. Guest apps are sandboxed JS + `runtime.*` bridge, not React Native UI.

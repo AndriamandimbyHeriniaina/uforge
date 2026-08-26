@@ -1,0 +1,180 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum PlanCode {
+  FREE
+  PRO
+  BUSINESS
+}
+
+enum AppStatus {
+  EMPTY
+  DRAFT
+  PREVIEW
+  PUBLISHED
+  ARCHIVED
+}
+
+enum GenerationStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  REFUSED
+}
+
+enum FilePurpose {
+  CONTEXT
+  ASSET
+  HAPP
+  SEED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(USER)
+  plan         PlanCode @default(FREE)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  quota        PlanQuota?
+  apps         App[]
+  generations  Generation[]
+  files        UploadedFile[]
+  usageRecords UsageRecord[]
+  auditLogs    AuditLog[]
+}
+
+model PlanQuota {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dailyGenerations Int      @default(5)
+  dailyTokens      Int      @default(100000)
+  monthlyTokens    Int      @default(500000)
+  maxPromptChars   Int      @default(8000)
+  maxContextChars  Int      @default(32000)
+  maxFileBytes     Int      @default(10485760)
+  maxBuildsPerDay  Int      @default(10)
+  updatedAt        DateTime @updatedAt
+}
+
+model App {
+  id                String    @id @default(uuid())
+  publicId          String    @unique
+  ownerId           String
+  owner             User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name              String
+  slug              String
+  status            AppStatus @default(EMPTY)
+  runtimeMinVersion String    @default("1.0.0")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  drafts      Draft[]
+  versions    AppVersion[]
+  files       UploadedFile[]
+  generations Generation[]
+
+  @@unique([ownerId, slug])
+}
+
+model Draft {
+  id               String   @id @default(uuid())
+  appId            String
+  app              App      @relation(fields: [appId], references: [id], onDelete: Cascade)
+  revision         Int
+  specJson         Json     @default("{}")
+  sourceStorageKey String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  generations      Generation[]
+
+  @@unique([appId, revision])
+}
+
+model AppVersion {
+  id             String   @id @default(uuid())
+  appId          String
+  app            App      @relation(fields: [appId], references: [id], onDelete: Cascade)
+  versionNumber  Int
+  happStorageKey String?
+  seedStorageKey String?
+  manifestJson   Json     @default("{}")
+  compiledAt     DateTime @default(now())
+
+  @@unique([appId, versionNumber])
+}
+
+model Generation {
+  id               String           @id @default(uuid())
+  requestId        String           @unique
+  userId           String
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appId            String?
+  app              App?             @relation(fields: [appId], references: [id], onDelete: SetNull)
+  draftId          String?
+  draft            Draft?           @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  prompt           String
+  skillsApplied    String[]
+  skillsHash       String?
+  provider         String?
+  model            String?
+  inputTokens      Int              @default(0)
+  outputTokens     Int              @default(0)
+  estimatedCostUsd Float            @default(0)
+  status           GenerationStatus @default(PENDING)
+  resultSpec       Json?
+  refusalReason    String?
+  durationMs       Int?
+  createdAt        DateTime         @default(now())
+  usage            UsageRecord?
+}
+
+model UsageRecord {
+  id               String     @id @default(uuid())
+  userId           String
+  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  generationId     String     @unique
+  generation       Generation @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  inputTokens      Int
+  outputTokens     Int
+  estimatedCostUsd Float
+  createdAt        DateTime   @default(now())
+}
+
+model UploadedFile {
+  id         String      @id @default(uuid())
+  userId     String
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appId      String?
+  app        App?        @relation(fields: [appId], references: [id], onDelete: SetNull)
+  storageKey String
+  filename   String
+  mimeType   String
+  sizeBytes  Int
+  purpose    FilePurpose @default(CONTEXT)
+  createdAt  DateTime    @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  payload   Json     @default("{}")
+  createdAt DateTime @default(now())
+}

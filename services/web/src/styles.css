@@ -1,0 +1,49 @@
+:root {
+  --bg: #0c0b0a;
+  --bg-elevated: #141210;
+  --bg-soft: #1b1815;
+  --line: #2c2823;
+  --text: #f3eee6;
+  --muted: #9c948a;
+  --copper: #d4894a;
+  --copper-dim: rgba(212, 137, 74, 0.16);
+  --danger: #e08a7a;
+  --ok: #b7c9a3;
+  --radius: 18px;
+  --font: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+  --serif: 'Instrument Serif', ui-serif, Georgia, serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+#app {
+  min-height: 100vh;
+}

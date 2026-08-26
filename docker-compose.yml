@@ -1,0 +1,103 @@
+# Uforge (You Forge)
+# The app UI is the `web` service: code in services/web, URL http://localhost:5173
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hforge}
+      POSTGRES_DB: ${POSTGRES_DB:-hforge}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hforge} -d ${POSTGRES_DB:-hforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [hforge]
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [hforge]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-hforge}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-hforgesecret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    networks: [hforge]
+
+  gateway:
+    build:
+      context: ./services/gateway
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hforge}:${POSTGRES_PASSWORD:-hforge}@postgres:5432/${POSTGRES_DB:-hforge}?schema=public
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: minio
+      HFORGE_SKILLS_DIR: /skills/prompt
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
+    volumes:
+      - ./skills/prompt:/skills/prompt
+      - ./services/gateway/src:/app/src
+      - ./services/gateway/prisma:/app/prisma
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks: [hforge]
+
+  compiler:
+    build:
+      context: ./services/compiler
+    environment:
+      COMPILER_PORT: 3001
+    ports:
+      - "3001:3001"
+    networks: [hforge]
+
+  web:
+    # Uforge Builder / Runtime PWA (Vue 3). Open http://localhost:5173
+    build:
+      context: ./services/web
+    environment:
+      VITE_GATEWAY_URL: ${VITE_GATEWAY_URL:-http://localhost:3000}
+    volumes:
+      - ./services/web:/app
+      - web_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - gateway
+    networks: [hforge]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  web_node_modules:
+
+networks:
+  hforge:
+    name: hforge
