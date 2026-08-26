@@ -10,7 +10,8 @@ Backend propriétaire. Le Runtime et le Builder ne parlent **jamais** à OpenAI,
 - Assembler le contexte (spec, fichiers, skills).
 - Router vers un provider via adaptateur.
 - Tracer tokens / coût (`UsageRecord`).
-- Stocker drafts, versions, artefacts (clés MinIO, pas les binaires dans Postgres).
+- Stocker drafts Builder et traces de génération.
+- **Ne jamais stocker le `.happ`** : il reste sur le device.
 
 ## API minimale
 
@@ -20,6 +21,8 @@ Backend propriétaire. Le Runtime et le Builder ne parlent **jamais** à OpenAI,
 | `POST` | `/v1/auth/login` | JWT |
 | `GET` | `/v1/me` | Profil + quota restant |
 | `GET` | `/v1/apps` | Apps de l’utilisateur |
+| `GET` | `/v1/apps/current` | App unique de ce Runtime |
+| `POST` | `/v1/apps/current/compile` | Accusé de compile (pas de binaire `.happ`) |
 | `POST` | `/v1/apps` | Créer une app (draft vide) |
 | `POST` | `/v1/ai/generate` | Génération cadrée par les skills |
 | `GET` | `/v1/skills` | Liste des skills déposées (admin) |

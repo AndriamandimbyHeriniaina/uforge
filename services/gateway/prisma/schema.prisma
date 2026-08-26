@@ -37,7 +37,7 @@ enum GenerationStatus {
 enum FilePurpose {
   CONTEXT
   ASSET
-  HAPP
+  HAPP // unused: artefacts are not stored on the gateway
   SEED
 }
 
@@ -111,7 +111,7 @@ model AppVersion {
   appId          String
   app            App      @relation(fields: [appId], references: [id], onDelete: Cascade)
   versionNumber  Int
-  happStorageKey String?
+  happStorageKey String? // unused: the .happ stays on the device
   seedStorageKey String?
   manifestJson   Json     @default("{}")
   compiledAt     DateTime @default(now())

@@ -1,16 +1,16 @@
 # Fonctionnalité — Compiler
 
-Transforme le workspace en `.happ` exécutable.
+Transforme le workspace en `.happ` exécutable **sur le device**.
 
 ## Pipeline
 
-Source → bundler (Vite) → minify / tree-shake → **externals** (vue, `runtime.*`) → empaqueter seed + manifest → compresser → signer → MinIO.
+Source → bundler (Vite) → minify / tree-shake → **externals** (vue, `runtime.*`) → empaqueter seed + manifest (email Uforge) → compresser → signer → **store local du Runtime**.
 
-Preview = même pipeline, artefact temporaire. Compile = version publiée.
+Preview = même pipeline, artefact temporaire. Compile = version publiée **sur l’appareil**.
 
 ## Où ça tourne
 
-- Preview légère : possible dans `services/web`.
-- Publication / gros assets : service `compiler` (conteneur), appelé par le gateway.
+- Publication : le Runtime (`services/web`, plus tard Capacitor) assemble et conserve le `.happ`.
+- Service `compiler` (conteneur) : bundler optionnel. Il **renvoie** l’artefact au Runtime. Il ne persiste rien. Le gateway n’enregistre pas le binaire.
 
-MVP : `services/compiler` accepte un payload source et renvoie un artefact factice signé (stub), pour coller le flux Docker avant le vrai bundling.
+MVP : le Runtime sérialise spec + manifeste (dont l’email) en local. Le gateway n’accuse que le fait d’un compile (quota / statut), sans recevoir le `.happ`.

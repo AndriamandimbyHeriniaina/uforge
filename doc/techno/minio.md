@@ -1,9 +1,9 @@
 # Techno — MinIO
 
-S3 compatible. Buckets :
+S3 compatible. Bucket :
 
 - `hforge-context` — fichiers fournis au Builder (Excel, PDF, images).
-- `hforge-artifacts` — `.happ` compilés.
-- `hforge-seeds` — copies de seed si extraites du paquet.
 
-Le gateway stocke `storageKey`, mime, taille dans `UploadedFile` / `AppVersion`. Jamais le binaire dans Postgres.
+Pas de bucket d’artefacts : le `.happ` n’est **pas** stocké sur MinIO ni sur le gateway.
+
+Le gateway stocke `storageKey`, mime, taille dans `UploadedFile` pour le contexte Builder uniquement. Jamais le binaire dans Postgres.

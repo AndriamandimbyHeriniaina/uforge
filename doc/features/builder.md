@@ -1,23 +1,17 @@
 # Fonctionnalité — AI Builder
 
-Interface protégée **dans le Runtime**, jamais fournie par le `.happ`.
+Le Builder est **dans** l’app. Pas de gestionnaire de plusieurs applications.
 
-## Flux utilisateur
+## Parcours (tout public)
 
-Prompt → preview (même Runtime) → modifier → compiler (publier une version) → utiliser offline.
+1. L’écran, c’est **son appli** (vide au début), en plein écran.
+2. Un bouton **U** flottant, semi-transparent, **déplaçable**, ouvre une fenêtre compte Uforge.
+3. Après connexion : **conversation**. On décrit, on ajuste, message après message.
+4. L’aperçu se met à jour derrière. **Utiliser mon appli** compile et **chiffre** le `.happ` sur l’appareil, puis ferme la fenêtre.
+5. Pour modifier plus tard : même bouton → **mot de passe** (l’email est dans l’enveloppe) → déchiffrement + connexion → on continue le fil.
 
-Le workspace source reste sur le device (ou snapshot MinIO plus tard). Compiler ne détruit pas le chantier.
+Compile ne termine pas le projet. Une seule `.happ`.
 
 ## Accès
 
-Geste / combinaison = révélation UX seulement. Auth robuste (compte Uforge / secret Builder) ensuite.
-
-## Nettoyer l’app
-
-Bouton à côté du prompt, confirmation :
-
-1. Réinitialiser les données : supprime l’overlay, recopie le seed.
-2. Nettoyer l’app : overlay + `.happ` installé, Runtime vide, Builder intact.
-3. Tout le chantier : option séparée (source/drafts).
-
-Voir [reset-app.md](reset-app.md).
+Le bouton flottant révèle l’entrée. La sécurité = compte Uforge.

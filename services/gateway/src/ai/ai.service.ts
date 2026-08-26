@@ -93,7 +93,19 @@ export class AiService {
       });
     }
 
-    const spec = this.stubSpec(dto.prompt);
+    const existingDraft = dto.appId
+      ? await this.prisma.draft.findFirst({
+          where: dto.draftId
+            ? { id: dto.draftId, appId: dto.appId }
+            : { appId: dto.appId },
+          orderBy: { revision: 'desc' },
+        })
+      : null;
+
+    const { spec, reply } = this.conversationalStub(
+      existingDraft?.specJson,
+      dto.prompt,
+    );
     const inputTokens = Math.ceil((loaded.block.length + dto.prompt.length) / 4);
     const outputTokens = Math.ceil(JSON.stringify(spec).length / 4);
 
@@ -149,6 +161,7 @@ export class AiService {
       status: 'SUCCEEDED',
       skillsApplied: loaded.names,
       spec,
+      reply,
       provider: 'stub',
     };
   }
@@ -167,15 +180,91 @@ export class AiService {
     return null;
   }
 
-  private stubSpec(prompt: string) {
-    return {
-      app: { name: 'Generated app', runtime: { min_version: '1.0.0' } },
-      capabilities: this.guessCapabilities(prompt),
-      pages: [{ name: 'Home', type: 'custom' }],
-      entities: {},
-      notes: 'Stub provider. Replace with AI Gateway adapters. Skills were injected.',
-      sourcePrompt: prompt.slice(0, 500),
+  private conversationalStub(existing: unknown, prompt: string) {
+    const prev =
+      existing && typeof existing === 'object' ? (existing as Record<string, unknown>) : {};
+    const previousPages = Array.isArray(prev.pages)
+      ? ([...prev.pages] as Array<{ name: string; type: string }>)
+      : [];
+    const previousCaps = Array.isArray(prev.capabilities)
+      ? [...(prev.capabilities as string[])]
+      : [];
+    const conversation = Array.isArray(prev.conversation)
+      ? [...(prev.conversation as Array<{ role: 'user' | 'assistant'; text: string }>)]
+      : [];
+    conversation.push({ role: 'user', text: prompt });
+
+    const first = previousPages.length === 0;
+    if (first) {
+      previousPages.push(...this.pagesFromPrompt(prompt));
+    } else {
+      const extra = this.extraPageFromPrompt(prompt);
+      if (extra && !previousPages.some((page) => page.name === extra.name)) {
+        previousPages.push(extra);
+      }
+    }
+
+    const reply = first
+      ? 'D’accord. Voici une première version. Dis-moi ce que tu veux ajouter ou changer — pas besoin de tout dire d’un coup.'
+      : 'C’est noté, j’ai ajusté. Tu peux continuer, et quand c’est bon tu utilises l’appli.';
+    conversation.push({ role: 'assistant', text: reply });
+
+    const prevApp = prev.app as { name?: string } | undefined;
+    const spec = {
+      app: {
+        name: prevApp?.name || this.nameFromPrompt(prompt),
+        runtime: { min_version: '1.0.0' },
+      },
+      capabilities: [...new Set([...previousCaps, ...this.guessCapabilities(prompt)])],
+      pages: previousPages,
+      conversation,
     };
+    return { spec, reply };
+  }
+
+  private nameFromPrompt(prompt: string): string {
+    const lower = prompt.toLowerCase();
+    if (lower.includes('stock')) {
+      return 'Mon stock';
+    }
+    if (lower.includes('salon') || lower.includes('coiff')) {
+      return 'Mon salon';
+    }
+    if (lower.includes('jeu')) {
+      return 'Mon jeu';
+    }
+    return 'Mon application';
+  }
+
+  private pagesFromPrompt(prompt: string): Array<{ name: string; type: string }> {
+    const lower = prompt.toLowerCase();
+    if (lower.includes('jeu')) {
+      return [
+        { name: 'Jouer', type: 'custom' },
+        { name: 'Scores', type: 'dashboard' },
+      ];
+    }
+    if (lower.includes('stock')) {
+      return [
+        { name: 'Accueil', type: 'dashboard' },
+        { name: 'Produits', type: 'crud' },
+      ];
+    }
+    return [{ name: 'Accueil', type: 'custom' }];
+  }
+
+  private extraPageFromPrompt(prompt: string): { name: string; type: string } | null {
+    const lower = prompt.toLowerCase();
+    if (lower.includes('photo') || lower.includes('caméra') || lower.includes('camera')) {
+      return { name: 'Photos', type: 'custom' };
+    }
+    if (lower.includes('client')) {
+      return { name: 'Clients', type: 'crud' };
+    }
+    if (lower.includes('rdv') || lower.includes('rendez')) {
+      return { name: 'Agenda', type: 'custom' };
+    }
+    return null;
   }
 
   private guessCapabilities(prompt: string): string[] {

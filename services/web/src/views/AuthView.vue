@@ -38,13 +38,13 @@ async function submit(): Promise<void> {
         </div>
       </div>
       <p class="lede">
-        Décris l’application que tu veux. Uforge la forge, l’installe, et la fait
-        vivre hors ligne — stock, vitrine, jeu HTML5.
+        Crée un compte, dis ce que tu veux. Ensuite, Uforge
+        <em>devient</em> ton appli.
       </p>
       <ul class="points">
-        <li>Un Runtime, des applications portables</li>
-        <li>IA cadrée, jamais de clés dans l’app</li>
-        <li>Caméra, fichiers, Bluetooth via le pont device</li>
+        <li>Pas besoin de savoir coder</li>
+        <li>Ça marche sans internet au quotidien</li>
+        <li>Tu pourras encore la modifier, plus tard</li>
       </ul>
     </section>
 
@@ -134,6 +134,10 @@ h1 {
   max-width: 28rem;
   color: var(--muted);
   font-size: 1.12rem;
+}
+.lede em {
+  font-style: italic;
+  color: var(--text);
 }
 .points {
   margin: 0;

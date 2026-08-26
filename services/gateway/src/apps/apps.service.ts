@@ -38,7 +38,53 @@ export class AppsService {
           create: { revision: 1, specJson: {} },
         },
       },
-      include: { drafts: true },
+      include: { drafts: true, versions: true },
+    });
+  }
+
+  /**
+   * Returns the unique app of this Runtime (create on first use).
+   * Uforge is not an app manager: one .happ per install.
+   *
+   * @example
+   * const app = await appsService.ensureCurrent(userId);
+   */
+  async ensureCurrent(ownerId: string) {
+    const existing = await this.prisma.app.findFirst({
+      where: { ownerId },
+      orderBy: { createdAt: 'asc' },
+      include: { drafts: { orderBy: { revision: 'desc' } }, versions: true },
+    });
+    if (existing) {
+      return existing;
+    }
+    return this.create(ownerId, { name: 'Mon application' });
+  }
+
+  /**
+   * Records that the Runtime compiled on device. The .happ is never uploaded.
+   *
+   * @example
+   * await appsService.markCompiledOnDevice(userId);
+   */
+  async markCompiledOnDevice(ownerId: string) {
+    const app = await this.ensureCurrent(ownerId);
+    const last = await this.prisma.appVersion.findFirst({
+      where: { appId: app.id },
+      orderBy: { versionNumber: 'desc' },
+    });
+    const versionNumber = (last?.versionNumber ?? 0) + 1;
+    await this.prisma.appVersion.create({
+      data: {
+        appId: app.id,
+        versionNumber,
+        manifestJson: { stored: 'device' },
+      },
+    });
+    return this.prisma.app.update({
+      where: { id: app.id },
+      data: { status: 'PUBLISHED' },
+      include: { drafts: { orderBy: { revision: 'desc' }, take: 1 } },
     });
   }
 

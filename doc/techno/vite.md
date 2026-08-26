@@ -4,4 +4,4 @@ Bundler du web Runtime/Builder et, plus tard, du compiler pour les apps utilisat
 
 Externals du `.happ` : `vue`, `runtime`. Sortie IIFE ou ESM selon le loader Runtime.
 
-Service `compiler` : enveloppe Vite (headless) quand le vrai build sera branché. Stub actuel : zip manifest + placeholder JS.
+Service `compiler` : enveloppe Vite (headless) quand le vrai build sera branché. Il renvoie l’artefact au Runtime ; **aucun stockage** gateway/MinIO.

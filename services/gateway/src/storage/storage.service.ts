@@ -6,7 +6,6 @@ import { Client } from 'minio';
 export class StorageService implements OnModuleInit {
   private readonly client: Client;
   readonly contextBucket: string;
-  readonly artifactsBucket: string;
 
   constructor(config: ConfigService) {
     this.client = new Client({
@@ -17,20 +16,13 @@ export class StorageService implements OnModuleInit {
       secretKey: config.get<string>('MINIO_SECRET_KEY', 'hforgesecret'),
     });
     this.contextBucket = config.get<string>('MINIO_BUCKET_CONTEXT', 'hforge-context');
-    this.artifactsBucket = config.get<string>(
-      'MINIO_BUCKET_ARTIFACTS',
-      'hforge-artifacts',
-    );
   }
 
   async onModuleInit(): Promise<void> {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       try {
-        for (const bucket of [this.contextBucket, this.artifactsBucket]) {
-          const exists = await this.client.bucketExists(bucket);
-          if (!exists) {
-            await this.client.makeBucket(bucket);
-          }
+        if (!(await this.client.bucketExists(this.contextBucket))) {
+          await this.client.makeBucket(this.contextBucket);
         }
         return;
       } catch {

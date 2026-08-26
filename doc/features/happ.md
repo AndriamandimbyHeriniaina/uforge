@@ -1,10 +1,21 @@
 # Fonctionnalité — Package `.happ`
 
-Artefact **exécutable**, pas le chantier Builder.
+Artefact **exécutable**, pas le chantier Builder. Il vit **uniquement sur le device**, **chiffré**. Le gateway ne le reçoit jamais et ne le stocke jamais.
 
-## Contenu publié
+## Contenu publié (en clair dans l’enveloppe)
 
-Manifest (id, version, runtime min, capacités), bundle JS/CSS minifié, assets référencés, **seed** SQLite et/ou JSON, checksum, signature.
+Email du compte Uforge (pour demander le mot de passe et dériver la clé). Rien du JS, de la spec ni du seed.
+
+## Contenu publié (chiffré)
+
+Manifest (id, version, runtime min, capacités), bundle JS/CSS minifié, assets, **seed**, spec Builder.
+
+## Clé
+
+1. Le mot de passe est enveloppé avec l’email : `HMAC-SHA-256(clé = email, message = mot de passe)`.
+2. La clé AES-256-GCM est `PBKDF2-SHA-256` de cet enveloppe, sel = email, 210 000 itérations.
+
+Le mot de passe n’est **pas** écrit sur le disque. Il reste en RAM le temps de la session Builder.
 
 ## Absents du `.happ`
 

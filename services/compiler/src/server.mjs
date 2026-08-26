@@ -4,7 +4,8 @@ const port = Number(process.env.COMPILER_PORT ?? 3001);
 
 /**
  * Stub compile endpoint. A real implementation will run Vite with Runtime
- * externals and emit a signed .happ. This keeps the Docker topology in place.
+ * externals and return a signed .happ to the Runtime. The compiler must not
+ * persist the artefact; the gateway must never store a .happ.
  *
  * @example
  * fetch('http://localhost:3001/v1/compile', {

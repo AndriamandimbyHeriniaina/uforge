@@ -15,6 +15,16 @@ export class AppsController {
     return this.apps.list(req.user.sub);
   }
 
+  @Get('current')
+  current(@Req() req: Request & { user: AuthUser }) {
+    return this.apps.ensureCurrent(req.user.sub);
+  }
+
+  @Post('current/compile')
+  compile(@Req() req: Request & { user: AuthUser }) {
+    return this.apps.markCompiledOnDevice(req.user.sub);
+  }
+
   @Post()
   create(
     @Req() req: Request & { user: AuthUser },
