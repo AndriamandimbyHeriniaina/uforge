@@ -3,13 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { AnthropicAdapter } from './anthropic.adapter';
 import { OpenAiAdapter } from './openai.adapter';
 import { StubAdapter } from './stub.adapter';
-import type { LlmProvider, ProviderGenerateInput, ProviderGenerateResult, StreamTokenFn } from './provider.types';
+import type { LlmProvider } from './provider.types';
 
 /**
- * Picks the configured LLM adapter. Falls back to the stub if no key is set.
+ * Picks the configured LLM adapter.
+ * `AI_PROVIDER` = `anthropic` | `openai` | `stub`; unset → first adapter with a key, else stub.
  *
  * @example
- * const out = await router.generate(input);
+ * const provider = router.active();
  */
 @Injectable()
 export class ProviderRouter {
@@ -21,53 +22,15 @@ export class ProviderRouter {
   ) {}
 
   /**
-   * Runs one Builder turn on the active provider.
+   * Returns the adapter for this turn. Throws when the chosen provider has no key.
    *
    * @example
-   * const result = await router.generate(input);
+   * const out = await router.active().stream(request, onText);
    */
-  generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult> {
-    return this.active().generate(input);
-  }
-
-  /**
-   * Streams the user-facing reply, then returns the finished spec.
-   *
-   * @example
-   * const result = await router.generateStream(input, (delta) => write(delta));
-   */
-  generateStream(
-    input: ProviderGenerateInput,
-    onToken: StreamTokenFn,
-    signal?: AbortSignal,
-  ): Promise<ProviderGenerateResult> {
-    return this.active().generateStream(input, onToken, signal);
-  }
-
-  activeName(): string {
-    const wanted = this.config.get<string>('AI_PROVIDER', '').trim().toLowerCase();
-    if (wanted === 'openai' || wanted === 'anthropic' || wanted === 'stub') {
-      return wanted;
-    }
-    if (this.openai.isConfigured()) {
-      return 'openai';
-    }
-    if (this.anthropic.isConfigured()) {
-      return 'anthropic';
-    }
-    return 'stub';
-  }
-
-  private active(): LlmProvider {
+  active(): LlmProvider {
     const wanted = this.config.get<string>('AI_PROVIDER', '').trim().toLowerCase();
     if (wanted === 'stub') {
       return this.stub;
-    }
-    if (wanted === 'openai') {
-      if (!this.openai.isConfigured()) {
-        throw new Error('OPENAI_API_KEY is missing');
-      }
-      return this.openai;
     }
     if (wanted === 'anthropic') {
       if (!this.anthropic.isConfigured()) {
@@ -75,11 +38,17 @@ export class ProviderRouter {
       }
       return this.anthropic;
     }
-    if (this.openai.isConfigured()) {
+    if (wanted === 'openai') {
+      if (!this.openai.isConfigured()) {
+        throw new Error('OPENAI_API_KEY is missing');
+      }
       return this.openai;
     }
     if (this.anthropic.isConfigured()) {
       return this.anthropic;
+    }
+    if (this.openai.isConfigured()) {
+      return this.openai;
     }
     return this.stub;
   }

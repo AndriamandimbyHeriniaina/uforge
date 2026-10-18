@@ -1,18 +1,25 @@
 ---
-description: Uforge (You Forge) architecture and documentation-as-skills. Apply when working anywhere in this repository.
+description: Uforge (You Forge) product vision, architecture and documentation-as-skills. Apply when working anywhere in this repository.
 alwaysApply: true
 ---
 
 # Uforge
 
-Read `doc/architecture.md` before changing structure, services, or data flow.
+Read `doc/vision.md` first, then `doc/architecture.md`. The vision page wins over any other doc, code comment or habit. The code was rebuilt on this vision on 2026-10-18; what is done, tested and still missing is in "État du code" / "Reste à faire" of `doc/architecture.md`. Keep docs and code in sync when you change either.
 
-- Features: `doc/features/<name>.md`
-- Technos: `doc/techno/<name>.md`
-- Gateway prompt skills (end users, not this agent): `skills/prompt/`
+Product in one line: an empty app that becomes any JS app through an AI conversation. The admin's Uforge password protects the workshop and encrypts what comes out of it. "Builder" validates the app; it can then be exported/imported as a `.happ` file.
+
+Non-negotiables:
+- The generation AI writes real code (project files) through the `uf-*` protocol. Never reintroduce a fixed spec, page types or a template catalogue.
+- One app per Runtime install. No app manager.
+- The device is the source of truth for the app. The gateway never stores source, builds, `.happ` files or app data.
+- Never persist the admin password (no localStorage, sessionStorage or disk).
+- Generated apps run only in the sandboxed iframe and reach the device only through `runtime.*`. Nothing in `runtime.*` can open the workshop or read the admin block.
+- No AI provider calls from `services/web`: all generation goes through `services/gateway`.
+- `skills/prompt/` frames the generation AI; `doc/` frames developers. Keep `skills/prompt/30-runtime-api.md` identical to `doc/features/device-bridge.md`, and `skills/prompt/10-output-protocol.md` in sync with the gateway parser.
+
+Pages: features in `doc/features/<name>.md`, technos in `doc/techno/<name>.md`.
 
 JSDoc and code comments in English with an `@example`. Product `doc/` is in French.
 
-Do not call AI providers from `services/web`. All generation goes through `services/gateway`.
-
-Stack: Docker Compose, NestJS gateway, Prisma/Postgres, Redis, MinIO, Vue 3 + Vite, Capacitor later. Guest apps are sandboxed JS + `runtime.*` bridge, not React Native UI.
+Stack: Docker Compose, NestJS gateway, Prisma/Postgres, Redis, esbuild compiler, Vue 3 + Vite Runtime, Capacitor Android.

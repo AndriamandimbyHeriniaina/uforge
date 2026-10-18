@@ -19,7 +19,8 @@ const dragging = ref(false);
 let origin = { x: 0, y: 0, px: 0, py: 0 };
 let pointerId = -1;
 let dragged = false;
-let skipClick = false;
+let suppressClick = false;
+let pendingOpen: number | null = null;
 
 function clampPosition(next: { x: number; y: number }): { x: number; y: number } {
   const maxX = Math.max(8, window.innerWidth - SIZE - 8);
@@ -35,17 +36,21 @@ function persist(): void {
 }
 
 /**
- * Opens the Uforge panel unless this pointer sequence was a drag.
+ * Opens the panel from the `click` event only. Opening on pointerup let the
+ * click synthesised after a touch land on the new sheet's backdrop and close
+ * it at once. The timer is a fallback for WebViews that never send the click.
  *
  * @example
- * emitOpen();
+ * openSoon();
  */
-function emitOpen(): void {
-  skipClick = true;
-  emit('open');
-  window.setTimeout(() => {
-    skipClick = false;
-  }, 80);
+function openSoon(): void {
+  if (pendingOpen !== null) {
+    window.clearTimeout(pendingOpen);
+  }
+  pendingOpen = window.setTimeout(() => {
+    pendingOpen = null;
+    emit('open');
+  }, 350);
 }
 
 function onPointerMove(event: PointerEvent): void {
@@ -74,8 +79,9 @@ function onPointerUp(event: PointerEvent): void {
   if (target?.hasPointerCapture(event.pointerId)) {
     target.releasePointerCapture(event.pointerId);
   }
+  suppressClick = wasDrag;
   if (!wasDrag && event.type !== 'pointercancel') {
-    emitOpen();
+    openSoon();
   }
 }
 
@@ -93,7 +99,12 @@ function onPointerDown(event: PointerEvent): void {
 }
 
 function onClick(event: MouseEvent): void {
-  if (skipClick) {
+  if (pendingOpen !== null) {
+    window.clearTimeout(pendingOpen);
+    pendingOpen = null;
+  }
+  if (suppressClick) {
+    suppressClick = false;
     event.preventDefault();
     event.stopPropagation();
     return;

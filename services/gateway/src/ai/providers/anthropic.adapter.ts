@@ -1,24 +1,32 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import Anthropic from '@anthropic-ai/sdk';
 import type {
+  ContentPart,
   LlmProvider,
-  ProviderGenerateInput,
-  ProviderGenerateResult,
-  StreamTokenFn,
+  LlmRequest,
+  LlmResult,
+  LlmStopReason,
+  TextSink,
 } from './provider.types';
-import { parseModelJson, sanitizeSpec } from './spec.util';
-import { buildGenerateMessages } from './prompt';
-import { JsonReplyExtractor, mergeAbortSignals, readSseJson } from './stream.util';
+
+type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
- * Anthropic Messages adapter.
+ * Anthropic Messages adapter (official SDK, streaming).
+ *
+ * Env: `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (default `claude-opus-5-5`),
+ * `ANTHROPIC_MAX_TOKENS` (default 64000), `ANTHROPIC_EFFORT` (default `high`,
+ * empty to omit), `ANTHROPIC_FALLBACKS` (`default` or `off`).
  *
  * @example
- * const out = await anthropic.generate({ prompt, currentSpec, skillsBlock });
+ * const out = await anthropic.stream({ system, messages }, (delta) => parser.push(delta));
  */
 @Injectable()
 export class AnthropicAdapter implements LlmProvider {
   readonly id = 'anthropic';
+  private client: Anthropic | null = null;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -26,99 +34,95 @@ export class AnthropicAdapter implements LlmProvider {
     return Boolean(this.config.get<string>('ANTHROPIC_API_KEY', '').trim());
   }
 
-  generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult> {
-    return this.generateStream(input, () => undefined);
+  async stream(request: LlmRequest, onText: TextSink, signal?: AbortSignal): Promise<LlmResult> {
+    const model = this.config.get<string>('ANTHROPIC_MODEL', '').trim() || 'claude-opus-5-5';
+    const maxTokens = Number(this.config.get<string>('ANTHROPIC_MAX_TOKENS', '')) || 64000;
+    const effortRaw = this.config.get<string>('ANTHROPIC_EFFORT', 'high').trim() as Effort;
+    const effort = EFFORTS.includes(effortRaw) ? effortRaw : undefined;
+    const fallbacks = this.config.get<string>('ANTHROPIC_FALLBACKS', 'default').trim() !== 'off';
+
+    const stream = this.sdk().beta.messages.stream(
+      {
+        model,
+        max_tokens: maxTokens,
+        ...(effort ? { output_config: { effort } } : {}),
+        ...(fallbacks
+          ? { fallbacks: 'default' as const, betas: ['server-side-fallback-2026-07-01'] }
+          : {}),
+        system: [{ type: 'text', text: request.system, cache_control: { type: 'ephemeral' } }],
+        messages: request.messages.map((message) => ({
+          role: message.role,
+          content: message.parts.map(toBlock),
+        })),
+      },
+      { signal },
+    );
+
+    try {
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          onText(event.delta.text);
+        }
+      }
+      const final = await stream.finalMessage();
+      const text = final.content
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('');
+      const usage = final.usage;
+      return {
+        text,
+        inputTokens:
+          usage.input_tokens +
+          (usage.cache_read_input_tokens ?? 0) +
+          (usage.cache_creation_input_tokens ?? 0),
+        outputTokens: usage.output_tokens,
+        model: final.model,
+        stopReason: mapStop(final.stop_reason),
+        refusalCategory: final.stop_details?.category ?? null,
+      };
+    } catch (err) {
+      if (err instanceof Anthropic.APIError) {
+        throw new Error(`Anthropic ${err.status ?? ''} ${err.message}`.trim());
+      }
+      throw err;
+    }
   }
 
-  async generateStream(
-    input: ProviderGenerateInput,
-    onToken: StreamTokenFn,
-    signal?: AbortSignal,
-  ): Promise<ProviderGenerateResult> {
-    const apiKey = this.config.get<string>('ANTHROPIC_API_KEY', '').trim();
-    const model = this.config.get<string>(
-      'ANTHROPIC_MODEL',
-      'claude-sonnet-4-20250514',
-    );
-    const messages = buildGenerateMessages(input);
-    const system = messages.find((item) => item.role === 'system')?.content ?? '';
-    const user = messages
-      .filter((item) => item.role === 'user')
-      .map((item) => item.content)
-      .join('\n\n');
-    const timeout = AbortSignal.timeout(60_000);
-    const combined = mergeAbortSignals(signal, timeout);
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        temperature: 0.4,
-        stream: true,
-        system,
-        messages: [{ role: 'user', content: user }],
-      }),
-      signal: combined,
-    });
-    if (!response.ok) {
-      const body = (await response.json().catch(() => ({}))) as {
-        error?: { message?: string };
-      };
-      throw new Error(body.error?.message ?? `Anthropic HTTP ${response.status}`);
+  private sdk(): Anthropic {
+    if (!this.client) {
+      this.client = new Anthropic({
+        apiKey: this.config.get<string>('ANTHROPIC_API_KEY', '').trim(),
+        timeout: 15 * 60 * 1000,
+        maxRetries: 2,
+      });
     }
-    const extractor = new JsonReplyExtractor();
-    let inputTokens = 0;
-    let outputTokens = 0;
-    await readSseJson(
-      response.body,
-      (row) => {
-        const type = String(row.type ?? '');
-        if (type === 'message_delta') {
-          const usage = row.usage as { output_tokens?: number } | undefined;
-          outputTokens = usage?.output_tokens ?? outputTokens;
-        }
-        if (type === 'message_start') {
-          const message = row.message as {
-            usage?: { input_tokens?: number };
-          } | undefined;
-          inputTokens = message?.usage?.input_tokens ?? inputTokens;
-        }
-        if (type === 'content_block_delta') {
-          const delta = row.delta as { type?: string; text?: string } | undefined;
-          if (delta?.type === 'text_delta' && delta.text) {
-            extractor.push(delta.text, onToken);
-          }
-        }
-      },
-      signal,
-    );
-    const parsed = parseModelJson(extractor.raw || '{}');
-    if (parsed.refusal) {
-      return {
-        spec: input.currentSpec,
-        reply: parsed.refusal,
-        refusal: parsed.refusal,
-        inputTokens,
-        outputTokens,
-        provider: this.id,
-        model,
-      };
-    }
-    const reply =
-      parsed.reply?.trim() ||
-      'C’est noté. Dis-moi la suite, ou utilise l’appli quand c’est bon.';
+    return this.client;
+  }
+}
+
+function toBlock(part: ContentPart): Anthropic.Beta.BetaContentBlockParam {
+  if (part.type === 'image') {
     return {
-      spec: sanitizeSpec(parsed.spec, input.currentSpec, input.prompt, reply),
-      reply,
-      inputTokens,
-      outputTokens,
-      provider: this.id,
-      model,
+      type: 'image',
+      source: { type: 'base64', media_type: part.mime, data: part.dataBase64 },
     };
   }
+  return {
+    type: 'text',
+    text: part.text,
+    ...(part.cache ? { cache_control: { type: 'ephemeral' as const } } : {}),
+  };
+}
+
+function mapStop(reason: string | null): LlmStopReason {
+  if (reason === 'end_turn' || reason === 'stop_sequence') {
+    return 'end';
+  }
+  if (reason === 'max_tokens') {
+    return 'max_tokens';
+  }
+  if (reason === 'refusal') {
+    return 'refusal';
+  }
+  return 'other';
 }

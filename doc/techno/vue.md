@@ -1,7 +1,7 @@
 # Techno — Vue 3
 
-UI du Runtime et du Builder dans `services/web`. L’app **cliente** générée peut aussi s’appuyer sur Vue fourni en **external** par le Runtime (pas recopié dans chaque `.happ`).
+Vue sert à l’UI du **Runtime** dans `services/web` : écran d’accueil, atelier, bulle, dialogues d’import et d’export. Composition API, TypeScript. Pinia est facultatif.
 
-Composition API, TypeScript. Pas de Pinia obligatoire au stub.
+Les applis générées ne reçoivent **pas** Vue du Runtime. Elles utilisent ce que l’IA choisit (JS natif, Preact, Chart.js, Phaser…), déclaré dans leur `uforge.json` et embarqué par le compiler.
 
-Le Builder et l’app sandboxée ne partagent pas le même contexte JS.
+L’atelier et l’appli dans l’iframe ne partagent jamais le même contexte JS.

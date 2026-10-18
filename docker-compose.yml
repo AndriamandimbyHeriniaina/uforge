@@ -1,5 +1,5 @@
 # Uforge (You Forge)
-# The app UI is the `web` service: code in services/web, URL http://localhost:5173
+# The Runtime is the `web` service: code in services/web, URL http://localhost:5173
 services:
   postgres:
     image: postgres:16-alpine
@@ -29,20 +29,8 @@ services:
       retries: 10
     networks: [hforge]
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-hforge}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-hforgesecret}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - miniodata:/data
-    networks: [hforge]
-
   gateway:
+    # Accounts, quotas, AI turns. Stateless about apps (doc/features/gateway.md).
     build:
       context: ./services/gateway
     env_file:
@@ -50,7 +38,6 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-hforge}:${POSTGRES_PASSWORD:-hforge}@postgres:5432/${POSTGRES_DB:-hforge}?schema=public
       REDIS_URL: redis://redis:6379
-      MINIO_ENDPOINT: minio
       HFORGE_SKILLS_DIR: /skills/prompt
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
     volumes:
@@ -64,24 +51,30 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
     networks: [hforge]
 
   compiler:
+    # esbuild, stateless; npm packages cached in /cache (doc/features/compiler.md).
     build:
       context: ./services/compiler
     environment:
       COMPILER_PORT: 3001
+      COMPILER_CACHE_DIR: /cache
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
     volumes:
       - ./services/compiler/src:/app/src
+      - compiler_cache:/cache
     ports:
       - "3001:3001"
     networks: [hforge]
 
   web:
-    # Uforge Builder / Runtime PWA (Vue 3). Open http://localhost:5173
+    # Uforge Runtime (Vue 3 + Vite). Open http://localhost:5173
     build:
       context: ./services/web
     environment:
@@ -100,7 +93,7 @@ services:
 volumes:
   pgdata:
   redisdata:
-  miniodata:
+  compiler_cache:
   web_node_modules:
 
 networks:

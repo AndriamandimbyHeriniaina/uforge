@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/server.mjs"
+    "start": "node src/server.mjs",
+    "test": "node --test \"src/**/*.test.mjs\""
   },
   "dependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.12",
+    "node-html-parser": "^9.0.4"
   }
 }

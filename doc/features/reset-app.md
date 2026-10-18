@@ -1,13 +1,12 @@
-# Fonctionnalité — Nettoyer / réinitialiser
+# Fonctionnalité — Réinitialiser
 
-Bouton admin Builder, près du prompt. Confirmation (nom de l’app ou slider).
+Depuis l’atelier, quand l’admin est connecté. Chaque action demande une confirmation. « Tout effacer » demande en plus de taper le nom de l’appli.
 
-MVP : un bouton **Tout remettre à zéro**, confirmation en deux clics. Efface overlay + `.happ` local + draft Builder. Le compte Uforge reste.
+| Action | Effet | Ce qui est gardé |
+| --- | --- | --- |
+| Vider les données | Les bases live et d’aperçu sont vidées ; l’appli recrée ses données initiales au démarrage | Code, versions, conversation |
+| Revenir à une version | Voir [builder.md](builder.md#versions) | Tout |
+| Tout effacer | Build, base et bloc admin supprimés ; le Runtime redevient vierge (écran d’accueil) | Le compte Uforge, au gateway |
 
-| Action | Effet |
-| --- | --- |
-| Réinitialiser les données | Overlay détruit ; seed du `.happ` recopié |
-| Nettoyer l’app | Overlay + `.happ` installé supprimés ; Runtime vide ; Builder et compte Uforge intacts |
-| Effacer le chantier | En plus, drafts / source workspace |
-
-Ne pas toucher aux secrets gateway ni aux autres apps éventuellement installées.
+- Le gateway n’a rien à effacer, puisqu’il ne stocke pas l’appli.
+- Un destinataire sans mot de passe ne peut pas réinitialiser l’appli, mais il peut en importer une autre, qui la remplace. Une appli générée peut proposer sa propre remise à zéro de ses données.

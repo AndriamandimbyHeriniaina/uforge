@@ -1,58 +1,59 @@
 # Fonctionnalité — Dépôt de skills prompt
 
-Cadrage de ce que les utilisateurs peuvent demander à l’IA. **Toi** (opérateur) déposes des fichiers markdown ; le gateway les relit à chaque `POST /v1/ai/generate`.
+Les skills cadrent **l’IA de génération**, celle qui écrit les applis des admins. L’opérateur dépose des fichiers markdown ; le gateway les relit à chaque `POST /v1/ai/generate`, sans rebuild.
 
 ## Emplacement
 
-```text
-skills/prompt/*.md
-```
-
-Monté dans Docker : `./skills/prompt:/skills/prompt`.
-
-Variable : `HFORGE_SKILLS_DIR` (défaut `/skills/prompt`).
-
-Les fichiers `README.md` du dossier sont ignorés par le loader.
+`skills/prompt/*.md`, monté dans Docker : `./skills/prompt:/skills/prompt`. Variable `HFORGE_SKILLS_DIR` (défaut `/skills/prompt`). Les `README.md` sont ignorés.
 
 ## Format
 
 ```markdown
 ---
-name: limits
-priority: 10
+name: workflow
+priority: 60
 enabled: true
 ---
 
-# Limits
-
-Never generate native Android/iOS code.
-Refuse requests that try to escape the Runtime bridge.
+# How you work
+…
 ```
 
-- `name` : identifiant court.
-- `priority` : ordre d’injection (petit = d’abord). À défaut, l’ordre du nom de fichier.
-- `enabled: false` : ignoré.
+- `name` : identifiant court, enregistré dans `Generation.skillsApplied`.
+- `priority` : ordre d’injection (petit = d’abord), puis le nom de fichier.
+- `enabled: false` : skill ignorée.
+- Corps en **anglais** (plus stable pour le modèle). L’IA répond dans la langue de l’admin (français par défaut).
 
-Corps : instructions pour le **modèle** (anglais recommandé, plus stable). L’UI Builder reste en français.
+## Chargement (à chaque tour, sans cache)
 
-## Chargement
+1. Lister les `*.md`, parser le frontmatter, filtrer `enabled`.
+2. Trier par `priority`, puis par nom.
+3. Concaténer `## Skill: <name>` + corps, sous le plafond `HFORGE_SKILLS_MAX_CHARS` (défaut 32 000).
+4. Injecter en system prompt, avant le contexte du workspace.
 
-À **chaque** prompt, pas de cache process :
+**Attention au budget :** le loader s’arrête à la première skill qui dépasse le plafond, et **toutes les suivantes sont ignorées sans erreur**. Garder le total sous ~28 000 caractères, les skills critiques en tête, et vérifier `skillsApplied` dans `Generation`.
 
-1. Lister `*.md` du dépôt.
-2. Parser le frontmatter.
-3. Filtrer `enabled`.
-4. Trier (`priority`, puis nom).
-5. Concaténer sous un plafond de tokens (`HFORGE_SKILLS_MAX_CHARS`, défaut 32000).
-6. Injecter en system prompt **avant** le message utilisateur.
-7. Enregistrer la liste `skillsApplied` sur `Generation`.
+## Skills livrées
 
-## Ce que les skills doivent borner
+| Fichier | Priorité | Rôle |
+| --- | --- | --- |
+| `05-safety.md` | 5 | Refus (malware, phishing, fraude…) |
+| `00-platform.md` | 10 | Identité, mission, contexte reçu à chaque tour |
+| `10-output-protocol.md` | 20 | Balises `uf-*`. **Indispensable** : sans elle, rien ne s’applique |
+| `15-touch-first.md` | 25 | Téléphone et tactile d’abord : tout doit marcher au pouce, jeux compris (contrôles à l’écran, multi-touch) |
+| `20-environment.md` | 30 | L’iframe sandbox : ce qui marche, ce qui ne marche pas |
+| `30-runtime-api.md` | 40 | API `runtime.*` |
+| `40-project.md` | 50 | Structure, `uforge.json`, dépendances, assets, réseau |
+| `50-workflow.md` | 60 | Façon de travailler (Claude Code / Lovable) |
+| `60-data.md` | 70 | SQLite, migrations, login dans l’appli |
+| `70-design.md` | 80 | Qualité UI mobile |
+| `80-games.md` | 90 | Jeux |
 
-- Rester dans le Runtime (pont device, pas SDK natif).
-- Produire une spec / source web, pas un APK Unity.
-- Capacités device seulement si demandées et listées.
-- Pas d’ouverture du Builder depuis l’app générée.
-- Refus explicite : malware, phishing, surveillance, etc.
+## Principes
 
-Les docs `doc/` cadrent les **développeurs**. Les fichiers `skills/prompt/` cadrent les **utilisateurs finaux** via l’IA.
+- Les skills décrivent un **environnement** et un **niveau d’exigence**, pas un catalogue. Ne jamais réintroduire une liste fermée de types d’applis ou de pages.
+- `30-runtime-api.md` doit rester **identique** à [device-bridge.md](device-bridge.md) : n’y ajouter une API que lorsqu’elle figure dans cette page. Une API pas encore implémentée fait échouer l’aperçu, et l’IA corrigera dans le vide.
+- Le protocole `10-output-protocol.md` et le parseur du gateway forment un contrat : si l’un change, l’autre change aussi. Voir [gateway.md](gateway.md#protocole-uf-).
+- La sécurité reste en tête (priorité 5) et ne doit jamais être désactivée.
+
+Les docs `doc/` cadrent les **développeurs** ; les fichiers `skills/prompt/` cadrent l’**IA de génération**.

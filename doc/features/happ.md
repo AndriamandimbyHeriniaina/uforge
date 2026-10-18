@@ -1,30 +1,66 @@
-# Fonctionnalité — Package `.happ`
+# Fonctionnalité — Format `.happ`
 
-Artefact **exécutable**, pas le chantier Builder. Il vit **uniquement sur le device**, **chiffré**. Le gateway ne le reçoit jamais et ne le stocke jamais.
+Un fichier `.happ` contient **une appli complète**, prête à installer. C’est une archive ZIP : les blocs déjà chiffrés y sont stockés sans compression.
 
-## Contenu publié (en clair dans l’enveloppe)
+## Contenu
 
-Email du compte Uforge (pour demander le mot de passe et dériver la clé). Rien du JS, de la spec ni du seed.
+```text
+ma-boutique.happ
+├── header.json   en clair
+├── app.bin       AES-GCM(K_share) : build production (document HTML autonome) + manifest
+├── data.bin      AES-GCM(K_share) : base SQLite (avec runtime.storage)   — absent si « sans mes données »
+└── admin.bin     AES-GCM(K_admin) : workspace                              — absent si « appli figée »
+```
 
-## Contenu publié (chiffré)
+## `header.json`
 
-Manifest (id, version, runtime min, capacités), bundle JS/CSS minifié, assets, **seed**, spec Builder.
+```json
+{
+  "format": 1,
+  "runtimeMin": "1.0.0",
+  "appId": "7b0c…",
+  "name": "Ma boutique",
+  "icon": "data:image/svg+xml;base64,…",
+  "owner": "admin@exemple.fr",
+  "version": 12,
+  "exportedAt": "2026-10-18T10:00:00Z",
+  "options": { "frozen": false, "withData": true },
+  "capabilities": ["camera", "network"],
+  "crypto": {
+    "shareKey": "base64",
+    "admin": { "kdf": "PBKDF2-SHA-256", "iterations": 600000, "salt": "base64", "iv": "base64", "keyWrap": "base64" }
+  },
+  "blocks": {
+    "app": { "iv": "base64", "sha256": "hex", "size": 412345 },
+    "data": { "iv": "base64", "sha256": "hex", "size": 98304 },
+    "admin": { "iv": "base64", "sha256": "hex", "size": 1203344 }
+  }
+}
+```
 
-## Clé
+- `version` est le numéro de la version validée (Builder) exportée.
+- `icon` fait 64 Ko au maximum.
+- `crypto.admin` et `blocks.admin` sont absents si l’appli est figée ; `blocks.data` est absent si l’export est « sans mes données ».
 
-1. Le mot de passe est enveloppé avec l’email : `HMAC-SHA-256(clé = email, message = mot de passe)`.
-2. La clé AES-256-GCM est `PBKDF2-SHA-256` de cet enveloppe, sel = email, 210 000 itérations.
+## Bloc admin
 
-Le mot de passe n’est **pas** écrit sur le disque. Il reste en RAM le temps de la session Builder.
+- Workspace : fichiers texte et assets binaires (les images jointes « à utiliser dans l’appli » y sont).
+- Versions : instantanés dédupliqués par hash (50 au maximum).
+- Conversation (200 derniers échanges).
+- Réglages de l’atelier.
 
-## Absents du `.happ`
+La base d’aperçu (`happ.preview`) et les pièces jointes « pour référence » ne sont pas exportées.
 
-Source `.vue`/`.ts`, Vite, `node_modules`, source maps prod, Builder, overlay live.
+## Sur l’appareil
 
-## Seed vs live
+Le découpage est le même (`happ.header`, `happ.app`, `happ.data`, `happ.admin`, plus `happ.preview`), mais le build et la base sont chiffrés par `K_device` au lieu de `K_share`. Code : `services/web/src/core/happFile.ts`. Voir [runtime.md](runtime.md#stockage-sur-lappareil).
 
-Le seed voyage dans le paquet (vitrine pré-remplie, niveaux). L’overlay vit dans `data/<appId>/` sur le device. Un partage « avec mes données » recongèle l’overlay dans un nouveau seed au compile.
+## Jamais dans un `.happ`
 
-## Partage
+Mot de passe, KEK, `K_admin` en clair, JWT, clés des providers IA, `node_modules`, sourcemaps de production.
 
-Par défaut : code + seed d’origine. Option compile : inclure les données live (avertissement privacy).
+## Le gateway
+
+Il ne reçoit, ne stocke et ne relaie **jamais** un `.happ`. Le fichier circule de personne à personne.
+
+Voir aussi [encryption.md](encryption.md) et [export-import.md](export-import.md).

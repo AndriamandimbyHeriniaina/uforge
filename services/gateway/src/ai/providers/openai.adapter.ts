@@ -1,20 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
+  ContentPart,
   LlmProvider,
-  ProviderGenerateInput,
-  ProviderGenerateResult,
-  StreamTokenFn,
+  LlmRequest,
+  LlmResult,
+  TextSink,
 } from './provider.types';
-import { parseModelJson, sanitizeSpec } from './spec.util';
-import { buildGenerateMessages } from './prompt';
-import { JsonReplyExtractor, mergeAbortSignals, readSseJson } from './stream.util';
+import { mergeAbortSignals, readSseJson } from './stream.util';
 
 /**
  * OpenAI Chat Completions adapter (also works with compatible proxies).
  *
+ * Env: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, optional `OPENAI_MAX_TOKENS`.
+ *
  * @example
- * const out = await openai.generate({ prompt, currentSpec, skillsBlock });
+ * const out = await openai.stream({ system, messages }, (delta) => parser.push(delta));
  */
 @Injectable()
 export class OpenAiAdapter implements LlmProvider {
@@ -26,23 +27,14 @@ export class OpenAiAdapter implements LlmProvider {
     return Boolean(this.config.get<string>('OPENAI_API_KEY', '').trim());
   }
 
-  generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult> {
-    return this.generateStream(input, () => undefined);
-  }
-
-  async generateStream(
-    input: ProviderGenerateInput,
-    onToken: StreamTokenFn,
-    signal?: AbortSignal,
-  ): Promise<ProviderGenerateResult> {
+  async stream(request: LlmRequest, onText: TextSink, signal?: AbortSignal): Promise<LlmResult> {
     const apiKey = this.config.get<string>('OPENAI_API_KEY', '').trim();
     const baseUrl = this.config
       .get<string>('OPENAI_BASE_URL', 'https://api.openai.com/v1')
       .replace(/\/$/, '');
-    const model = this.config.get<string>('OPENAI_MODEL', 'gpt-4o-mini');
-    const messages = buildGenerateMessages(input);
-    const timeout = AbortSignal.timeout(60_000);
-    const combined = mergeAbortSignals(signal, timeout);
+    const model = this.config.get<string>('OPENAI_MODEL', '').trim() || 'gpt-4.1';
+    const maxTokens = Number(this.config.get<string>('OPENAI_MAX_TOKENS', '')) || undefined;
+    const combined = mergeAbortSignals(signal, AbortSignal.timeout(15 * 60 * 1000));
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -51,10 +43,19 @@ export class OpenAiAdapter implements LlmProvider {
       },
       body: JSON.stringify({
         model,
-        temperature: 0.4,
         stream: true,
-        response_format: { type: 'json_object' },
-        messages,
+        stream_options: { include_usage: true },
+        ...(maxTokens ? { max_completion_tokens: maxTokens } : {}),
+        messages: [
+          { role: 'system', content: request.system },
+          ...request.messages.map((message) => ({
+            role: message.role,
+            content:
+              message.role === 'assistant'
+                ? message.parts.map((part) => (part.type === 'text' ? part.text : '')).join('')
+                : message.parts.map(toPart),
+          })),
+        ],
       }),
       signal: combined,
     });
@@ -64,9 +65,10 @@ export class OpenAiAdapter implements LlmProvider {
       };
       throw new Error(body.error?.message ?? `OpenAI HTTP ${response.status}`);
     }
-    const extractor = new JsonReplyExtractor();
+    let text = '';
     let inputTokens = 0;
     let outputTokens = 0;
+    let finish: string | null = null;
     await readSseJson(
       response.body,
       (row) => {
@@ -78,47 +80,43 @@ export class OpenAiAdapter implements LlmProvider {
           outputTokens = usage.completion_tokens ?? outputTokens;
         }
         const choices = row.choices as
-          | Array<{ delta?: { content?: string } }>
+          | Array<{ delta?: { content?: string }; finish_reason?: string | null }>
           | undefined;
-        const content = choices?.[0]?.delta?.content;
+        const choice = choices?.[0];
+        if (choice?.finish_reason) {
+          finish = choice.finish_reason;
+        }
+        const content = choice?.delta?.content;
         if (content) {
-          extractor.push(content, onToken);
+          text += content;
+          onText(content);
         }
       },
       signal,
     );
-    return this.finish(input, extractor.raw, inputTokens, outputTokens, model);
-  }
-
-  private finish(
-    input: ProviderGenerateInput,
-    content: string,
-    inputTokens: number,
-    outputTokens: number,
-    model: string,
-  ): ProviderGenerateResult {
-    const parsed = parseModelJson(content || '{}');
-    if (parsed.refusal) {
-      return {
-        spec: input.currentSpec,
-        reply: parsed.refusal,
-        refusal: parsed.refusal,
-        inputTokens,
-        outputTokens,
-        provider: this.id,
-        model,
-      };
-    }
-    const reply =
-      parsed.reply?.trim() ||
-      'C’est noté. Dis-moi la suite, ou utilise l’appli quand c’est bon.';
     return {
-      spec: sanitizeSpec(parsed.spec, input.currentSpec, input.prompt, reply),
-      reply,
+      text,
       inputTokens,
       outputTokens,
-      provider: this.id,
       model,
+      stopReason:
+        finish === 'length'
+          ? 'max_tokens'
+          : finish === 'content_filter'
+            ? 'refusal'
+            : finish === 'stop'
+              ? 'end'
+              : 'other',
     };
   }
+}
+
+function toPart(part: ContentPart): Record<string, unknown> {
+  if (part.type === 'image') {
+    return {
+      type: 'image_url',
+      image_url: { url: `data:${part.mime};base64,${part.dataBase64}` },
+    };
+  }
+  return { type: 'text', text: part.text };
 }

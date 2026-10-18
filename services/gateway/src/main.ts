@@ -1,10 +1,13 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Every turn carries the whole workspace and the attached images.
+  app.useBodyParser('json', { limit: process.env.GATEWAY_BODY_LIMIT ?? '40mb' });
   app.enableCors({
     origin: corsOrigins(),
     credentials: true,

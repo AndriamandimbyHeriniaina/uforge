@@ -1,29 +1,24 @@
 import http from 'node:http';
-import { packGuest } from './pack.mjs';
+import { buildProject } from './build.mjs';
 
 const port = Number(process.env.COMPILER_PORT ?? 3001);
+const MAX_BODY = 60 * 1024 * 1024;
 const allowedOrigins = new Set(
   (process.env.WEB_ORIGIN ?? 'http://localhost:5173')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean)
-    .concat([
-      'http://localhost:5173',
-      'https://localhost',
-      'capacitor://localhost',
-      'http://localhost',
-    ]),
+    .concat(['http://localhost:5173', 'https://localhost', 'capacitor://localhost', 'http://localhost']),
 );
 
 /**
- * Compile endpoint. Returns a minified guest bundle + seed SQL + manifest.
- * The compiler must not persist the artefact; the gateway must never store a .happ.
+ * Stateless build service. Never persists a workspace or an output.
  *
  * @example
- * fetch('http://localhost:3001/v1/compile', {
+ * fetch('http://localhost:3001/v1/build', {
  *   method: 'POST',
  *   headers: { 'content-type': 'application/json' },
- *   body: JSON.stringify({ spec, playerSource, appId, appName }),
+ *   body: JSON.stringify({ mode: 'preview', files, assets }),
  * });
  */
 const server = http.createServer(async (req, res) => {
@@ -38,22 +33,28 @@ const server = http.createServer(async (req, res) => {
     json(res, 200, { status: 'ok', service: 'compiler' });
     return;
   }
-  if (req.method === 'POST' && url === '/v1/compile') {
+  if (req.method === 'POST' && url === '/v1/build') {
+    let body;
     try {
-      const body = await readBody(req);
-      const packed = await packGuest({
-        spec: body.spec,
-        playerSource: body.playerSource,
-        appId: body.appId,
-        appName: body.appName,
-      });
-      json(res, 200, packed);
+      body = await readBody(req);
     } catch (err) {
-      json(res, 500, {
-        status: 'error',
-        message: err instanceof Error ? err.message : 'compile failed',
-      });
+      json(res, 413, { status: 'error', errors: [{ message: err.message }] });
+      return;
     }
+    if (!Array.isArray(body.files)) {
+      json(res, 400, { status: 'error', errors: [{ message: 'files must be an array' }] });
+      return;
+    }
+    const started = Date.now();
+    const out = await buildProject({
+      mode: body.mode === 'production' ? 'production' : 'preview',
+      files: body.files,
+      assets: Array.isArray(body.assets) ? body.assets : [],
+    });
+    console.log(
+      `build ${body.mode ?? 'preview'} ${out.status} ${body.files.length} files in ${Date.now() - started} ms`,
+    );
+    json(res, 200, out);
     return;
   }
   res.writeHead(404);
@@ -61,11 +62,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 function cors(req, res) {
-  const requestOrigin = req.headers.origin;
-  const allow = allowedOrigins.has(requestOrigin)
-    ? requestOrigin
-    : 'http://localhost:5173';
-  res.setHeader('Access-Control-Allow-Origin', allow);
+  const origin = req.headers.origin;
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigins.has(origin) ? origin : 'http://localhost:5173');
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'content-type');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
 }
@@ -76,9 +75,18 @@ function json(res, status, body) {
 }
 
 function readBody(req) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        reject(new Error('request too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => {
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
@@ -86,7 +94,8 @@ function readBody(req) {
         resolve({});
       }
     });
+    req.on('error', reject);
   });
 }
 
-server.listen(port, '0.0.0.0');
+server.listen(port, '0.0.0.0', () => console.log(`compiler listening on ${port}`));

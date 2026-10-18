@@ -1,19 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import type {
-  AppSpec,
-  LlmProvider,
-  ProviderGenerateInput,
-  ProviderGenerateResult,
-  StreamTokenFn,
-} from './provider.types';
-import { sanitizeSpec } from './spec.util';
-import { emitReplySlowly } from './stream.util';
+import type { LlmProvider, LlmRequest, LlmResult, TextSink } from './provider.types';
 
 /**
- * Offline fallback when no provider API key is configured.
+ * Offline adapter used when no provider key is set. It answers with a small
+ * but real project in the `uf-*` protocol, so the whole pipeline (gateway →
+ * compiler → Runtime → runtime.db) can be tested end to end without an AI.
  *
  * @example
- * const result = await stub.generate({ prompt: 'Un stock', currentSpec: {}, skillsBlock: '' });
+ * const out = await stub.stream({ system, messages }, (delta) => parser.push(delta));
  */
 @Injectable()
 export class StubAdapter implements LlmProvider {
@@ -23,170 +17,213 @@ export class StubAdapter implements LlmProvider {
     return true;
   }
 
-  generate(input: ProviderGenerateInput): Promise<ProviderGenerateResult> {
-    return this.generateStream(input, () => undefined);
-  }
-
-  async generateStream(
-    input: ProviderGenerateInput,
-    onToken: StreamTokenFn,
-    signal?: AbortSignal,
-  ): Promise<ProviderGenerateResult> {
-    const { spec, reply } = this.conversationalStub(input.currentSpec, input.prompt);
-    await emitReplySlowly(reply, onToken, signal);
+  async stream(request: LlmRequest, onText: TextSink, signal?: AbortSignal): Promise<LlmResult> {
+    const last = request.messages[request.messages.length - 1];
+    const lastText = last?.parts.map((part) => (part.type === 'text' ? part.text : '')).join('\n') ?? '';
+    const isRetry = request.messages.length > 1;
+    const message = extractAdminMessage(lastText);
+    const text = isRetry ? '' : stubAnswer(message);
+    for (let i = 0; i < text.length; i += 48) {
+      if (signal?.aborted) {
+        throw new Error('aborted');
+      }
+      onText(text.slice(i, i + 48));
+      await new Promise((resolve) => setTimeout(resolve, 4));
+    }
     return {
-      spec,
-      reply,
-      inputTokens: Math.ceil((input.skillsBlock.length + input.prompt.length) / 4),
-      outputTokens: Math.ceil(JSON.stringify(spec).length / 4),
-      provider: this.id,
-      model: 'hforge-stub-v0',
+      text,
+      inputTokens: Math.round(lastText.length / 4),
+      outputTokens: Math.round(text.length / 4),
+      model: 'stub',
+      stopReason: 'end',
     };
   }
+}
 
-  private conversationalStub(existing: AppSpec, prompt: string) {
-    const previousPages = Array.isArray(existing.pages) ? [...existing.pages] : [];
-    const previousCaps = Array.isArray(existing.capabilities)
-      ? [...existing.capabilities]
-      : [];
-    const first = previousPages.length === 0;
-    if (first) {
-      previousPages.push(...this.pagesFromPrompt(prompt));
-    } else {
-      const extra = this.extraPageFromPrompt(prompt);
-      if (extra && !previousPages.some((page) => page.name === extra.name)) {
-        previousPages.push(extra);
-      }
-    }
-    const reply = first
-      ? 'D’accord. Voici une première version. Dis-moi ce que tu veux ajouter ou changer — pas besoin de tout dire d’un coup.'
-      : 'C’est noté, j’ai ajusté. Tu peux continuer, et quand c’est bon tu utilises l’appli.';
-    const spec = sanitizeSpec(
-      {
-        app: {
-          name: existing.app?.name || this.nameFromPrompt(prompt),
-          runtime: { min_version: '1.0.0' },
-        },
-        capabilities: [
-          ...new Set([...previousCaps, ...this.guessCapabilities(prompt)]),
-        ],
-        pages: previousPages,
-        seed:
-          existing.seed ??
-          (prompt.toLowerCase().includes('stock')
-            ? { produits: [{ title: 'Cahier', qty: 4 }] }
-            : undefined),
-      },
-      existing,
-      prompt,
-      reply,
-    );
-    return { spec, reply };
-  }
+function extractAdminMessage(prompt: string): string {
+  const marker = '# Admin message';
+  const at = prompt.lastIndexOf(marker);
+  const raw = at === -1 ? prompt : prompt.slice(at + marker.length);
+  return raw.trim().split('\n')[0]?.slice(0, 140) || 'Mon carnet';
+}
 
-  private nameFromPrompt(prompt: string): string {
-    const lower = prompt.toLowerCase();
-    if (lower.includes('stock')) {
-      return 'Mon stock';
-    }
-    if (lower.includes('salon') || lower.includes('coiff')) {
-      return 'Mon salon';
-    }
-    if (lower.includes('jeu')) {
-      return 'Mon jeu';
-    }
-    return 'Mon application';
-  }
+/**
+ * The demo answer: chat text + file operations.
+ *
+ * @example
+ * stubAnswer('Une appli de notes');
+ */
+export function stubAnswer(message: string): string {
+  const subtitle = JSON.stringify(`Ta demande : « ${message} »`);
+  return `Mode démo (aucune IA configurée) : je pose un carnet de notes pour tester Uforge de bout en bout.
+<uf-write path="uforge.json">
+{
+  "name": "Carnet",
+  "description": "Un carnet de notes rapide, créé par le mode démo de Uforge.",
+  "icon": "assets/icon.svg",
+  "entry": "index.html",
+  "orientation": "any",
+  "capabilities": [],
+  "dependencies": {},
+  "jsx": null
+}
+</uf-write>
+<uf-write path="assets/icon.svg">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#d4894a"/><path d="M20 18h20l6 6v22H20z" fill="#fff8f0"/><path d="M25 32h14M25 38h10" stroke="#d4894a" stroke-width="3" stroke-linecap="round"/></svg>
+</uf-write>
+<uf-write path="index.html">
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Carnet</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main id="app" class="app"></main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
+</uf-write>
+<uf-write path="src/db.js">
+export async function setupDb() {
+  await runtime.db.migrate([
+    'CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL, created_at TEXT NOT NULL)',
+  ]);
+}
 
-  private pagesFromPrompt(prompt: string): AppSpec['pages'] {
-    const lower = prompt.toLowerCase();
-    if (lower.includes('jeu')) {
-      return [
-        {
-          name: 'Jouer',
-          type: 'game',
-          description: 'Touche le point qui bouge.',
-          game: {
-            kind: 'script',
-            goal: 'Un petit jeu généré',
-            source:
-              "resize();var s=0,x=canvas.width/2,y=canvas.height/2,vx=4,vy=3;function loop(){if(!ctx)return;x+=vx;y+=vy;if(x<20||x>canvas.width-20)vx*=-1;if(y<20||y>canvas.height-20)vy*=-1;ctx.fillStyle='#1c1814';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.beginPath();ctx.arc(x,y,20,0,Math.PI*2);ctx.fillStyle='#d4894a';ctx.fill();ctx.fillStyle='#fff';ctx.font='32px sans-serif';ctx.fillText(String(s),24,48);requestAnimationFrame(loop);}canvas.addEventListener('pointerdown',function(){s+=1;});loop();",
-          },
-        },
-        { name: 'Scores', type: 'dashboard' },
-      ];
-    }
-    if (lower.includes('stock')) {
-      return [
-        {
-          name: 'Accueil',
-          type: 'dashboard',
-          description: 'Combien de produits tu as.',
-        },
-        {
-          name: 'Produits',
-          type: 'crud',
-          collection: 'produits',
-          fields: [
-            { key: 'title', label: 'Produit', kind: 'text' },
-            { key: 'qty', label: 'Quantité', kind: 'number' },
-          ],
-        },
-      ];
-    }
-    return [
-      {
-        name: 'Accueil',
-        type: 'custom',
-        description: 'Ton application commence ici.',
-      },
-    ];
-  }
+export function listNotes() {
+  return runtime.db.query('SELECT id, text, created_at FROM notes ORDER BY id DESC');
+}
 
-  private extraPageFromPrompt(prompt: string): NonNullable<AppSpec['pages']>[number] | null {
-    const lower = prompt.toLowerCase();
-    if (lower.includes('photo') || lower.includes('caméra') || lower.includes('camera')) {
-      return {
-        name: 'Photos',
-        type: 'custom',
-        description: 'Des photos prises avec le téléphone.',
-        actions: [{ label: 'Prendre une photo', run: 'camera' }],
-      };
-    }
-    if (lower.includes('client')) {
-      return {
-        name: 'Clients',
-        type: 'crud',
-        collection: 'clients',
-        fields: [
-          { key: 'title', label: 'Nom', kind: 'text' },
-          { key: 'note', label: 'Note', kind: 'note' },
-        ],
-      };
-    }
-    if (lower.includes('rdv') || lower.includes('rendez')) {
-      return {
-        name: 'Agenda',
-        type: 'custom',
-        description: 'Tes prochains rendez-vous.',
-        items: ['Ajoute tes créneaux ici en me le disant.'],
-      };
-    }
-    return null;
-  }
+export function addNote(text) {
+  return runtime.db.exec('INSERT INTO notes (text, created_at) VALUES (?, ?)', [
+    text,
+    new Date().toISOString(),
+  ]);
+}
 
-  private guessCapabilities(prompt: string): string[] {
-    const lower = prompt.toLowerCase();
-    const caps: string[] = ['storage', 'database'];
-    if (lower.includes('camera') || lower.includes('photo') || lower.includes('barcode')) {
-      caps.push('camera');
-    }
-    if (lower.includes('bluetooth')) {
-      caps.push('bluetooth');
-    }
-    if (lower.includes('fichier') || lower.includes('file') || lower.includes('pdf')) {
-      caps.push('files');
-    }
-    return caps;
+export function removeNote(id) {
+  return runtime.db.exec('DELETE FROM notes WHERE id = ?', [id]);
+}
+</uf-write>
+<uf-write path="src/main.js">
+import { addNote, listNotes, removeNote, setupDb } from './db.js';
+
+const SUBTITLE = ${subtitle};
+const app = document.getElementById('app');
+let notes = [];
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text) node.textContent = text;
+  return node;
+}
+
+function formatDate(iso) {
+  return new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function render() {
+  app.replaceChildren();
+  const header = el('header', 'top');
+  header.append(el('h1', '', 'Carnet'), el('p', 'sub', SUBTITLE));
+
+  const form = el('form', 'composer');
+  const input = el('input');
+  input.placeholder = 'Écris une note…';
+  input.setAttribute('aria-label', 'Nouvelle note');
+  const add = el('button', 'primary', 'Ajouter');
+  add.type = 'submit';
+  form.append(input, add);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    await addNote(text);
+    await refresh();
+  });
+
+  const list = el('ul', 'list');
+  if (notes.length === 0) {
+    list.append(el('li', 'empty', 'Aucune note pour l’instant. Écris la première ci-dessus.'));
   }
+  for (const note of notes) {
+    const item = el('li', 'note');
+    const body = el('div', 'body');
+    body.append(el('span', 'text', note.text), el('small', 'date', formatDate(note.created_at)));
+    const remove = el('button', 'ghost', 'Supprimer');
+    remove.setAttribute('aria-label', 'Supprimer cette note');
+    remove.addEventListener('click', async () => {
+      await removeNote(note.id);
+      await refresh();
+    });
+    item.append(body, remove);
+    list.append(item);
+  }
+  app.append(header, form, list);
+}
+
+async function refresh() {
+  notes = await listNotes();
+  render();
+}
+
+async function start() {
+  await setupDb();
+  await refresh();
+}
+
+start();
+</uf-write>
+<uf-write path="src/styles.css">
+:root {
+  --bg: #f6f1ea;
+  --card: #fffdf9;
+  --line: #e5dccf;
+  --text: #1f1a15;
+  --muted: #6b6258;
+  --accent: #d4894a;
+  --radius: 16px;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14110e; --card: #1d1914; --line: #332c25; --text: #f3eee6; --muted: #a39a8f; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.45 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+.app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+}
+.top h1 { margin: 8px 0 4px; font-size: 1.8rem; }
+.sub { margin: 0 0 16px; color: var(--muted); }
+.composer { display: flex; gap: 8px; margin-bottom: 16px; }
+.composer input {
+  flex: 1; min-width: 0; font: inherit; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text);
+}
+button { font: inherit; min-height: 44px; border-radius: 12px; cursor: pointer; }
+.primary { border: 0; padding: 0 18px; background: var(--accent); color: #1a120c; font-weight: 600; }
+.ghost { border: 1px solid var(--line); background: transparent; color: var(--muted); padding: 0 12px; }
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.note {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.body { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.text { overflow-wrap: anywhere; }
+.date { color: var(--muted); }
+.empty { color: var(--muted); padding: 24px 8px; text-align: center; }
+</uf-write>
+Le carnet est prêt : ajoute une note, recharge l’aperçu, elle doit toujours être là.`;
 }

@@ -2,43 +2,64 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
-  NotFoundException,
+  Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Prisma, UserRole } from '@prisma/client';
+import { UserRole } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { SkillsService } from '../skills/skills.service';
-import { GenerateDto } from '../apps/apps.dto';
 import { effectiveDailyGenerations } from '../quota.util';
+import { GenerateDto } from './generate.dto';
+import { buildRetryText, buildTurnParts, contextChars } from './prompt/build-prompt';
+import { UfStreamParser, type UfOpEvent } from './protocol/uf-parser';
+import {
+  applyOps,
+  diffFiles,
+  type FileChange,
+  type OpFailure,
+  type WorkspaceFiles,
+} from './protocol/workspace';
 import { ProviderRouter } from './providers/provider.router';
-import type { AppSpec, StreamTokenFn } from './providers/provider.types';
+import { IMAGE_MIMES, type LlmMessage, type LlmProvider } from './providers/provider.types';
 
-export type GenerateClientResult = {
+export type TurnStatus = 'SUCCEEDED' | 'REFUSED' | 'FAILED';
+
+/** Payload of the final `done` SSE event. */
+export type DonePayload = {
   requestId: string;
-  status: 'SUCCEEDED' | 'REFUSED' | 'FAILED';
-  skillsApplied: string[];
-  spec?: AppSpec;
-  reply?: string;
-  provider?: string;
-  refusal?: string;
+  status: TurnStatus;
+  reply: string;
+  changes: FileChange[];
+  usage: { inputTokens: number; outputTokens: number };
+  provider: string;
+  model: string;
+  /** French explanation when status is FAILED. */
   message?: string;
 };
 
-type TurnContext = {
+export type TurnEmitter = {
+  token: (text: string) => void;
+  op: (event: UfOpEvent) => void;
+};
+
+export type TurnContext = {
   userId: string;
   dto: GenerateDto;
   started: number;
   requestId: string;
-  skillsApplied: string[];
-  skillsBlock: string;
   generationId: string;
-  currentSpec: AppSpec;
+  skillsBlock: string;
+  skillsApplied: string[];
+  provider: LlmProvider;
 };
 
 @Injectable()
 export class AiService {
+  private readonly logger = new Logger(AiService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
@@ -48,12 +69,13 @@ export class AiService {
   ) {}
 
   /**
-   * Starts a turn (quota, skills, generation row). Safe to call before SSE headers.
+   * Checks quota and sizes, loads the skills, records the turn. Runs before the
+   * SSE headers so errors stay plain JSON.
    *
    * @example
-   * const ctx = await aiService.beginGenerate(userId, dto);
+   * const ctx = await ai.beginTurn(userId, dto);
    */
-  async beginGenerate(userId: string, dto: GenerateDto): Promise<TurnContext> {
+  async beginTurn(userId: string, dto: GenerateDto): Promise<TurnContext> {
     const started = Date.now();
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
@@ -63,222 +85,235 @@ export class AiService {
     if (!quota) {
       throw new HttpException('quota missing', HttpStatus.INTERNAL_SERVER_ERROR);
     }
-    if (dto.prompt.length > quota.maxPromptChars) {
-      throw new HttpException('prompt too large', HttpStatus.PAYLOAD_TOO_LARGE);
+    if (dto.message.length > quota.maxPromptChars) {
+      throw new HttpException('message too long', HttpStatus.PAYLOAD_TOO_LARGE);
+    }
+    if (contextChars(dto) > quota.maxContextChars) {
+      throw new HttpException('project too large for this plan', HttpStatus.PAYLOAD_TOO_LARGE);
+    }
+    for (const attachment of dto.attachments ?? []) {
+      if (attachment.kind === 'image') {
+        if (!IMAGE_MIMES.includes(attachment.mime as (typeof IMAGE_MIMES)[number])) {
+          throw new HttpException(`unsupported image type ${attachment.mime}`, HttpStatus.BAD_REQUEST);
+        }
+        const bytes = Math.floor(((attachment.dataBase64 ?? '').length * 3) / 4);
+        if (bytes > quota.maxFileBytes) {
+          throw new HttpException('attachment too large', HttpStatus.PAYLOAD_TOO_LARGE);
+        }
+      }
     }
 
     const used = await this.redis.incrDaily('generations', userId);
-    const dailyLimit = effectiveDailyGenerations(
-      quota.dailyGenerations,
-      this.config,
-    );
+    const dailyLimit = effectiveDailyGenerations(quota.dailyGenerations, this.config);
     if (used > dailyLimit && user.role !== UserRole.ADMIN) {
       throw new HttpException('daily generation quota exceeded', HttpStatus.TOO_MANY_REQUESTS);
     }
 
-    if (dto.appId) {
-      const owned = await this.prisma.app.findFirst({
-        where: { id: dto.appId, ownerId: userId },
-      });
-      if (!owned) {
-        throw new NotFoundException('app not found');
-      }
+    const loaded = await this.skills.loadForPrompt();
+    if (!loaded.block.trim()) {
+      throw new ServiceUnavailableException('skills deposit is empty');
+    }
+    let provider: LlmProvider;
+    try {
+      provider = this.providers.active();
+    } catch (err) {
+      throw new ServiceUnavailableException(err instanceof Error ? err.message : 'no provider');
     }
 
-    const loaded = await this.skills.loadForPrompt();
     const requestId = randomUUID();
-    const providerName = this.providers.activeName();
     const generation = await this.prisma.generation.create({
       data: {
         requestId,
         userId,
         appId: dto.appId,
-        draftId: dto.draftId,
-        prompt: dto.prompt,
+        prompt: dto.message.slice(0, 8000),
         skillsApplied: loaded.names,
         skillsHash: loaded.hash,
         status: 'RUNNING',
-        provider: providerName,
+        provider: provider.id,
       },
     });
-
-    const existingDraft = dto.appId
-      ? await this.prisma.draft.findFirst({
-          where: dto.draftId
-            ? { id: dto.draftId, appId: dto.appId }
-            : { appId: dto.appId },
-          orderBy: { revision: 'desc' },
-        })
-      : null;
-    const currentSpec =
-      existingDraft?.specJson && typeof existingDraft.specJson === 'object'
-        ? (existingDraft.specJson as AppSpec)
-        : {};
 
     return {
       userId,
       dto,
       started,
       requestId,
-      skillsApplied: loaded.names,
-      skillsBlock: loaded.block,
       generationId: generation.id,
-      currentSpec,
+      skillsBlock: loaded.block,
+      skillsApplied: loaded.names,
+      provider,
     };
   }
 
   /**
-   * Streams the French reply then persists the spec.
+   * Streams one turn: chat text → `token`, file operations → `op`. Applies the
+   * operations to the received workspace (one corrective retry), atomically.
    *
    * @example
-   * const out = await aiService.streamGenerate(ctx, (delta) => write(delta), signal);
+   * const done = await ai.runTurn(ctx, { token, op }, signal);
    */
-  async streamGenerate(
-    ctx: TurnContext,
-    onToken: StreamTokenFn,
-    signal?: AbortSignal,
-  ): Promise<GenerateClientResult> {
-    const hard = this.detectHardRefusal(ctx.dto.prompt);
-    if (hard) {
-      await this.prisma.generation.update({
-        where: { id: ctx.generationId },
-        data: {
-          status: 'REFUSED',
-          refusalReason: hard,
-          durationMs: Date.now() - ctx.started,
-        },
-      });
-      onToken(hard);
+  async runTurn(ctx: TurnContext, emit: TurnEmitter, signal?: AbortSignal): Promise<DonePayload> {
+    const original: WorkspaceFiles = {};
+    for (const file of ctx.dto.files ?? []) {
+      original[file.path] = file.content;
+    }
+    const assets = new Set((ctx.dto.assets ?? []).map((asset) => asset.path));
+    const firstMessage: LlmMessage = { role: 'user', parts: buildTurnParts(ctx.dto) };
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let model = '';
+
+    const finish = async (
+      status: TurnStatus,
+      reply: string,
+      changes: FileChange[],
+      message?: string,
+    ): Promise<DonePayload> => {
+      await this.record(ctx, status, { inputTokens, outputTokens, model }, changes, message);
       return {
         requestId: ctx.requestId,
-        status: 'REFUSED',
-        skillsApplied: ctx.skillsApplied,
-        reply: hard,
-        refusal: hard,
+        status,
+        reply,
+        changes,
+        usage: { inputTokens, outputTokens },
+        provider: ctx.provider.id,
+        model,
+        ...(message ? { message } : {}),
       };
-    }
+    };
 
-    let result;
     try {
-      result = await this.providers.generateStream(
-        {
-          skillsBlock: ctx.skillsBlock,
-          prompt: ctx.dto.prompt,
-          currentSpec: ctx.currentSpec,
-        },
-        onToken,
+      const parser = new UfStreamParser({ onText: emit.token, onOp: emit.op });
+      const first = await ctx.provider.stream(
+        { system: ctx.skillsBlock, messages: [firstMessage] },
+        (delta) => parser.push(delta),
         signal,
       );
+      inputTokens += first.inputTokens;
+      outputTokens += first.outputTokens;
+      model = first.model;
+      const parsed = parser.finish();
+
+      if (parsed.refusal || first.stopReason === 'refusal') {
+        const reply =
+          parsed.refusal ??
+          'Je ne peux pas réaliser cette demande. Essaie de la formuler autrement.';
+        if (!parsed.refusal && !parsed.text) {
+          emit.token(reply);
+        }
+        return finish('REFUSED', reply, [], parsed.refusal ?? `refusal (${first.refusalCategory ?? 'model'})`);
+      }
+
+      const applied = applyOps(original, parsed.ops, assets);
+      let files = applied.files;
+      const failures: OpFailure[] = [...applied.failures, ...fileProblems(parsed.problems)];
+      for (const problem of parsed.problems) {
+        if (!problemPath(problem)) {
+          this.logger.warn(`turn ${ctx.requestId}: ${problem}`);
+        }
+      }
+
+      if (failures.length > 0) {
+        this.logger.warn(`turn ${ctx.requestId}: retrying ${failures.length} failed operation(s)`);
+        const retryParser = new UfStreamParser({ onOp: emit.op });
+        const retry = await ctx.provider.stream(
+          {
+            system: ctx.skillsBlock,
+            messages: [
+              firstMessage,
+              { role: 'assistant', parts: [{ type: 'text', text: first.text || '(empty)' }] },
+              { role: 'user', parts: [{ type: 'text', text: buildRetryText(failures, files) }] },
+            ],
+          },
+          (delta) => retryParser.push(delta),
+          signal,
+        );
+        inputTokens += retry.inputTokens;
+        outputTokens += retry.outputTokens;
+        const retryParsed = retryParser.finish();
+        const second = applyOps(files, retryParsed.ops, assets);
+        const remaining = [...second.failures, ...fileProblems(retryParsed.problems)];
+        const fixed = new Set(retryParsed.ops.map((op) => (op.kind === 'rename' ? op.from : op.path)));
+        const unresolved = failures.filter((failure) => !fixed.has(failure.path));
+        if (remaining.length > 0 || unresolved.length > 0 || retryParsed.ops.length === 0) {
+          const detail = [...remaining, ...unresolved]
+            .map((failure) => `${failure.path} : ${failure.reason}`)
+            .join(' ; ');
+          return finish(
+            'FAILED',
+            parsed.text,
+            [],
+            `Je n’ai pas réussi à appliquer mes modifications (${detail}). Rien n’a été changé, réessaie ou reformule.`,
+          );
+        }
+        files = second.files;
+      }
+
+      const changes = diffFiles(original, files);
+      const reply = parsed.text || (changes.length ? 'C’est fait.' : '');
+      return finish('SUCCEEDED', reply, changes);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'provider error';
+      const reason = err instanceof Error ? err.message : 'provider error';
+      this.logger.error(`turn ${ctx.requestId} failed: ${reason}`);
+      return finish(
+        'FAILED',
+        '',
+        [],
+        signal?.aborted
+          ? 'Tour interrompu.'
+          : `Le service d’IA n’a pas répondu correctement (${reason}). Réessaie dans un instant.`,
+      );
+    }
+  }
+
+  private async record(
+    ctx: TurnContext,
+    status: TurnStatus,
+    usage: { inputTokens: number; outputTokens: number; model: string },
+    changes: FileChange[],
+    message?: string,
+  ): Promise<void> {
+    try {
       await this.prisma.generation.update({
         where: { id: ctx.generationId },
         data: {
-          status: 'FAILED',
-          refusalReason: message,
+          status,
+          model: usage.model || null,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          changedPaths: changes.map((change) => change.path),
+          refusalReason: status === 'SUCCEEDED' ? null : (message ?? null),
           durationMs: Date.now() - ctx.started,
+          ...(status !== 'FAILED' || usage.outputTokens > 0
+            ? {
+                usage: {
+                  create: {
+                    userId: ctx.userId,
+                    inputTokens: usage.inputTokens,
+                    outputTokens: usage.outputTokens,
+                    estimatedCostUsd: 0,
+                  },
+                },
+              }
+            : {}),
         },
       });
-      return {
-        requestId: ctx.requestId,
-        status: 'FAILED',
-        skillsApplied: ctx.skillsApplied,
-        message,
-      };
+    } catch (err) {
+      this.logger.error(`could not record turn ${ctx.requestId}: ${String(err)}`);
     }
-
-    if (result.refusal) {
-      await this.prisma.generation.update({
-        where: { id: ctx.generationId },
-        data: {
-          status: 'REFUSED',
-          refusalReason: result.refusal,
-          provider: result.provider,
-          model: result.model,
-          durationMs: Date.now() - ctx.started,
-        },
-      });
-      return {
-        requestId: ctx.requestId,
-        status: 'REFUSED',
-        skillsApplied: ctx.skillsApplied,
-        reply: result.refusal,
-        refusal: result.refusal,
-        provider: result.provider,
-      };
-    }
-
-    const spec = result.spec;
-    await this.prisma.$transaction([
-      this.prisma.generation.update({
-        where: { id: ctx.generationId },
-        data: {
-          status: 'SUCCEEDED',
-          resultSpec: spec as Prisma.InputJsonValue,
-          inputTokens: result.inputTokens,
-          outputTokens: result.outputTokens,
-          provider: result.provider,
-          model: result.model,
-          durationMs: Date.now() - ctx.started,
-        },
-      }),
-      this.prisma.usageRecord.create({
-        data: {
-          userId: ctx.userId,
-          generationId: ctx.generationId,
-          inputTokens: result.inputTokens,
-          outputTokens: result.outputTokens,
-          estimatedCostUsd: 0,
-        },
-      }),
-      ...(ctx.dto.appId
-        ? [
-            this.prisma.app.update({
-              where: { id: ctx.dto.appId },
-              data: {
-                status: 'DRAFT',
-                ...(spec.app?.name ? { name: spec.app.name } : {}),
-              },
-            }),
-          ]
-        : []),
-    ]);
-
-    if (ctx.dto.appId) {
-      const draft = ctx.dto.draftId
-        ? await this.prisma.draft.findFirst({
-            where: { id: ctx.dto.draftId, appId: ctx.dto.appId },
-          })
-        : await this.prisma.draft.findFirst({
-            where: { appId: ctx.dto.appId },
-            orderBy: { revision: 'desc' },
-          });
-      if (draft) {
-        await this.prisma.draft.update({
-          where: { id: draft.id },
-          data: { specJson: spec as Prisma.InputJsonValue },
-        });
-      }
-    }
-
-    return {
-      requestId: ctx.requestId,
-      status: 'SUCCEEDED',
-      skillsApplied: ctx.skillsApplied,
-      spec,
-      reply: result.reply,
-      provider: result.provider,
-    };
   }
+}
 
-  private detectHardRefusal(prompt: string): string | null {
-    const lower = prompt.toLowerCase();
-    const banned = ['keylogger', 'ransomware', 'phishing kit', 'csam'];
-    for (const term of banned) {
-      if (lower.includes(term)) {
-        return `refused by gateway policy (${term})`;
-      }
-    }
-    return null;
-  }
+function problemPath(problem: string): string | null {
+  const match = / for (\S+)$/.exec(problem);
+  return match?.[1] ?? null;
+}
+
+/** Protocol problems tied to a file (truncated write, empty edit) count as failures. */
+function fileProblems(problems: string[]): OpFailure[] {
+  return problems.flatMap((problem) => {
+    const path = problemPath(problem);
+    return path ? [{ path, reason: problem }] : [];
+  });
 }

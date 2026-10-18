@@ -1,12 +1,14 @@
 ---
 name: hforge-runtime
-description: Generic Runtime, WebView sandbox, device bridge, .happ loading, Builder reset. Use when editing services/web, Capacitor, SQLite seed/overlay, or runtime APIs.
+description: Uforge Runtime in services/web — modes (blank / workshop / app), floating bubble, sandboxed iframe, CSP, runtime.* host bridge, SQLite data and migrations, on-device storage, Capacitor plugins. Use when editing services/web runtime code, Capacitor, or runtime APIs.
 ---
 
 # Runtime
 
-Read [doc/features/runtime.md](../../../doc/features/runtime.md), [doc/features/device-bridge.md](../../../doc/features/device-bridge.md), [doc/features/happ.md](../../../doc/features/happ.md), [doc/features/data-seed-overlay.md](../../../doc/features/data-seed-overlay.md), [doc/features/reset-app.md](../../../doc/features/reset-app.md).
+Read [doc/features/runtime.md](../../../doc/features/runtime.md), [doc/features/device-bridge.md](../../../doc/features/device-bridge.md), [doc/features/data.md](../../../doc/features/data.md), [doc/techno/sqlite.md](../../../doc/techno/sqlite.md) and [doc/techno/capacitor.md](../../../doc/techno/capacitor.md).
 
-The on-device `.happ` is encrypted (AES-GCM). Only the owner email stays in the clear envelope. Never send the artefact or the derived key to the gateway.
-
-Guest UI runs in a sandboxed iframe (`allow-scripts` only) and talks to the host exclusively through `runtime.*` `postMessage`. Do not expose `openBuilder()`.
+- Iframe `srcdoc` with `sandbox="allow-scripts allow-forms allow-modals"`: never `allow-same-origin`. Inject the CSP (from capabilities), the `runtime.*` bootstrap and, in preview only, the error collector, all before the app's scripts.
+- The host bridge checks the message source, the method and the declared capability. Expose no `openBuilder()` and no access to the admin block.
+- The `runtime.*` API must match `doc/features/device-bridge.md` and `skills/prompt/30-runtime-api.md`. Change all three together.
+- Storage: IndexedDB `uforge`. Build and live database encrypted with `K_device`, admin block with `K_admin`. No app data in localStorage, never a password anywhere.
+- The app opens without a password; only the workshop asks for one.

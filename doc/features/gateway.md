@@ -1,58 +1,123 @@
 # Fonctionnalité — AI Gateway
 
-Backend propriétaire. Le Runtime et le Builder ne parlent **jamais** à OpenAI, Anthropic, etc.
+Backend NestJS (`services/gateway`). Le Runtime ne parle **jamais** directement à OpenAI, Anthropic, etc. Le gateway est **sans état vis-à-vis des applis** : il ne stocke ni code, ni build, ni `.happ`, ni données.
 
 ## Responsabilités
 
-- Authentifier l’utilisateur Uforge (pas le mot de passe de l’app générée).
-- Appliquer quotas et rate limit.
-- Lire le dépôt `skills/prompt/` à **chaque** prompt.
-- Assembler le contexte (spec, fichiers, skills).
-- Router vers un provider via adaptateur.
-- Tracer tokens / coût (`UsageRecord`).
-- Stocker drafts Builder et traces de génération.
-- **Ne jamais stocker le `.happ`** : il reste sur le device.
+- Comptes Uforge (email + mot de passe, JWT).
+- Quotas et rate limit.
+- Relire `skills/prompt/` à **chaque** tour.
+- Construire le prompt : les skills (qui contiennent le protocole de réponse), puis le contexte envoyé par l’atelier.
+- Streamer la réponse du provider, parser les opérations `uf-*`, les appliquer aux fichiers reçus et les valider.
+- Tracer chaque tour (métadonnées, tokens, coût), mais **pas** le code.
 
-## API minimale
+## API
 
 | Méthode | Chemin | Rôle |
 | --- | --- | --- |
-| `POST` | `/v1/auth/register` | Création compte |
+| `POST` | `/v1/auth/register` | Création du compte admin |
 | `POST` | `/v1/auth/login` | JWT |
 | `GET` | `/v1/me` | Profil + quota restant |
-| `GET` | `/v1/apps` | Apps de l’utilisateur |
-| `GET` | `/v1/apps/current` | App unique de ce Runtime |
-| `POST` | `/v1/apps/current/compile` | Accusé de compile (pas de binaire `.happ`) |
-| `POST` | `/v1/apps/current/reset` | Vide le draft Builder (compte intact) |
-| `POST` | `/v1/apps` | Créer une app (draft vide) |
-| `POST` | `/v1/ai/generate` | Génération cadrée par les skills (**SSE** : `token` puis `done`) |
-| `GET` | `/v1/skills` | Liste des skills déposées (admin) |
-| `POST` | `/v1/files` | Upload contexte Builder → MinIO |
+| `POST` | `/v1/ai/generate` | Un tour de conversation (SSE) |
+| `GET` | `/v1/skills` | Skills chargées (rôle `ADMIN` plateforme) |
 | `GET` | `/health` | Liveness |
 
-## Generate — contrat
+`/v1/apps*` et `/v1/files` ont été retirés : le workspace vit sur l’appareil et les pièces jointes partent dans le tour.
 
-Entrée : `prompt`, `appId?`, `draftId?`, `fileIds[]`.
+## `POST /v1/ai/generate`
 
-Sortie : flux SSE `text/event-stream` — événements `meta`, `token` (texte utilisateur), `done` (`requestId`, `status`, `spec`, `reply`). Erreurs quota/auth restent du JSON HTTP avant le flux.
+### Entrée
 
-Le premier champ JSON du modèle doit être `reply`, pour que la bulle s’affiche pendant que la spec arrive.
+```json
+{
+  "appId": "uuid de l’appli (traces uniquement)",
+  "message": "Ajoute un panier avec le total",
+  "files": [{ "path": "src/main.js", "content": "…" }],
+  "assets": [{ "path": "assets/logo.png", "mime": "image/png", "size": 48213 }],
+  "attachments": [
+    { "name": "vitrine.jpg", "kind": "image", "mime": "image/jpeg", "dataBase64": "…" },
+    { "name": "stock.csv", "kind": "text", "mime": "text/csv", "content": "…" }
+  ],
+  "errors": [{ "source": "runtime", "message": "x is not a function", "stack": "…", "file": "src/cart.js", "line": 12 }],
+  "conversation": [{ "role": "user", "text": "…" }, { "role": "assistant", "text": "…" }]
+}
+```
 
-La spec peut porter `pages[].fields`, `actions`, `items`, `game.source` (JS canvas jouable), et `seed`. Le gateway les normalise ; le Runtime les rend. Un type `game`/`canvas` n’est plus recalé sur le jouet « tape le point », sauf si `kind` vaut explicitement `catch` ou `tap`.
+- `files` : tous les fichiers texte du workspace. Au-delà du budget du plan, l’atelier envoie l’arborescence complète et les fichiers les plus récemment modifiés.
+- `assets` : les binaires sont **listés** et jamais envoyés (l’IA peut les référencer, pas les lire).
+- `conversation` : les 20 derniers échanges au maximum.
 
-Les clés providers restent dans les variables d’environnement du service `gateway`. Jamais dans le `.happ` ni le frontend.
+### Sortie : `text/event-stream`
+
+| Événement | Données |
+| --- | --- |
+| `meta` | `{ requestId, skills }` |
+| `token` | `{ text }` : message pour l’admin (le texte hors balises) |
+| `op` | `{ op: "write" \| "edit" \| "delete" \| "rename", path, phase: "start" \| "end" }` : pastilles |
+| `done` | `{ requestId, status: "SUCCEEDED" \| "REFUSED" \| "FAILED", reply, changes, usage }` |
+| `error` | `{ message }` |
+
+`changes` : `[{ op: "write", path, content }, { op: "delete", path }]`. C’est le diff final du tour : chaque fichier écrit, édité ou renommé est renvoyé avec son **contenu complet** (un renommage devient une suppression plus une écriture). Le Runtime n’a rien à rejouer.
+
+Les erreurs d’auth, de quota ou de taille sont du JSON HTTP, envoyé avant l’ouverture du flux. Pendant les longues phases de réflexion du modèle, le gateway envoie un commentaire SSE `: ping` toutes les 15 s pour que les proxys ne coupent pas la connexion.
+
+## Protocole `uf-*`
+
+Défini pour le modèle dans `skills/prompt/10-output-protocol.md`. Résumé de ce que le gateway doit parser :
+
+| Balise | Effet |
+| --- | --- |
+| texte hors balise | événement `token` |
+| `<uf-write path="…">contenu</uf-write>` | crée ou remplace le fichier |
+| `<uf-edit path="…"><uf-search>…</uf-search><uf-replace>…</uf-replace>…</uf-edit>` | chaque `uf-search` doit apparaître **exactement une fois** dans le fichier courant ; les paires s’appliquent dans l’ordre |
+| `<uf-delete path="…"/>` | supprime |
+| `<uf-rename from="…" to="…"/>` | renomme |
+| `<uf-refusal>…</uf-refusal>` | statut `REFUSED`, aucune opération |
+
+Validation :
+- Chemins relatifs, séparateur `/`, pas de `..`, pas de chemin absolu. Extensions texte autorisées : `html css js mjs ts tsx jsx json svg md txt csv`.
+- Échec d’un `uf-edit` : **une** relance automatique dans la même requête (« ce bloc ne correspond pas, réécris le fichier complet avec uf-write »). Si elle échoue aussi, statut `FAILED` et aucune modification (le tour est atomique).
+- `uforge.json` doit rester du JSON valide ; sinon, même traitement qu’un `uf-edit` en échec.
+
+## Construction du prompt
+
+1. **System** : le bloc des skills, dans l’ordre des priorités. **Aucune consigne de format codée en dur** dans `prompt.ts` : tout est dans les skills, pour que l’opérateur puisse ajuster sans rebuild.
+2. **User** : arborescence, fichiers (chemin + contenu), liste des assets, pièces jointes (les images en entrée multimodale), erreurs, conversation, puis le message.
+
+Le bloc stable (les skills) passe en premier, pour profiter du cache de prompt des providers.
 
 ## Providers
 
-`AI_PROVIDER` = `openai` | `anthropic` | `stub`.
+`AI_PROVIDER` = `anthropic` | `openai` | `stub`.
 
-- `OPENAI_API_KEY`, optionnel `OPENAI_BASE_URL` (proxy compatible), `OPENAI_MODEL` (défaut `gpt-4o-mini`).
-- `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`.
-- Sans clé, le gateway retombe sur le stub (mots-clés), pour que `docker compose` tourne quand même.
+- Générer du code librement exige un **modèle fort en code**. Recommandé : `claude-sonnet-5-5`, ou `claude-opus-5-5` pour les gros projets. `gpt-4o-mini` ne suffit pas.
+- Anthropic passe par le SDK officiel `@anthropic-ai/sdk`, en streaming. Variables :
+  - `ANTHROPIC_MODEL` (défaut `claude-opus-5-5`) ;
+  - `ANTHROPIC_MAX_TOKENS` (défaut 64 000 : l’IA écrit des fichiers complets) ;
+  - `ANTHROPIC_EFFORT` (défaut `high`, vide pour ne pas l’envoyer) ;
+  - `ANTHROPIC_FALLBACKS` (`default` : repli côté serveur en cas de refus ; `off` pour le désactiver).
+- OpenAI (ou proxy compatible) : `OPENAI_MODEL`, `OPENAI_BASE_URL`, `OPENAI_MAX_TOKENS` facultatif.
+- `stub` (sans clé) : renvoie un **petit projet réel** (un carnet de notes qui utilise `runtime.db`) au protocole `uf-*`. Il sert de test de bout en bout sans IA.
 
+Les clés restent dans l’environnement du gateway : jamais dans un `.happ`, jamais dans le front.
+
+## Quotas (`PlanQuota`)
+
+- `dailyGenerations`, `dailyTokens`, `monthlyTokens`.
+- `maxPromptChars` : le message de l’admin.
+- `maxContextChars` : workspace + pièces jointes. À relever (≥ 400 000), car le workspace complet part à chaque tour.
+- `maxFileBytes` : une pièce jointe.
+
+Hors production, le quota est de 30 tours par jour (`effectiveDailyGenerations`).
+
+## Traces (`Generation`)
+
+`requestId`, `userId`, `appId` (sans clé étrangère), message de l’admin, `skillsApplied`, `skillsHash`, provider, modèle, tokens, coût, durée, statut, `changedPaths`. **Pas** le contenu des fichiers.
+
+## V2
+
+Boucle agent à outils (lire, chercher, écrire) au lieu des balises, pour les projets qui dépassent le budget de contexte.
 
 ## Développement
 
-Code : `services/gateway`. Schéma : Prisma. Au changement d’entité : `npx prisma migrate dev` dans le conteneur ou en local contre Postgres Compose.
-
-Hors production (`NODE_ENV` ≠ `production`, Compose inclus), le quota journalier de génération est porté à **30** (le plan FREE reste à 5 en prod). Le compteur Redis du jour n’est pas réinitialisé.
+Code dans `services/gateway`, schéma Prisma. À chaque changement d’entité : `npx prisma migrate dev`. Tests du protocole : `npm test`. Taille maximale d’une requête : `GATEWAY_BODY_LIMIT` (défaut `40mb`).

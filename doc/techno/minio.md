@@ -1,9 +1,7 @@
 # Techno — MinIO
 
-S3 compatible. Bucket :
+**Retiré** le 2026-10-18 (service Compose, `StorageModule`, `POST /v1/files`, table `UploadedFile`, variables `MINIO_*`).
 
-- `hforge-context` — fichiers fournis au Builder (Excel, PDF, images).
+Le gateway est sans état vis-à-vis des applis ([architecture.md](../architecture.md)). Les pièces jointes partent dans le tour de conversation et vivent dans le bloc admin, sur l’appareil ([attachments.md](../features/attachments.md)). Le `.happ` n’est jamais stocké côté serveur.
 
-Pas de bucket d’artefacts : le `.happ` n’est **pas** stocké sur MinIO ni sur le gateway.
-
-Le gateway stocke `storageKey`, mime, taille dans `UploadedFile` pour le contexte Builder uniquement. Jamais le binaire dans Postgres.
+L’ancien volume Docker `uforge_miniodata` peut être supprimé : `docker volume rm uforge_miniodata`.
